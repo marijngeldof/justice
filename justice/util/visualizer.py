@@ -290,7 +290,7 @@ def add_regions_to_ternary(
             x,
             y,
             s=marker_size,
-            marker=".",
+            marker="X",
             color="black",
             edgecolor="none",
         )
@@ -450,7 +450,7 @@ def generate_uncertainty_visualizations(
             random_state=random_state,
         )
         ax_tern.set_title(f"Regional Uncertainty Composition — {yr}")
-        ternary_path = output_base / f"ternary_{yr}.png"
+        ternary_path = output_base / f"ternary_{yr}.svg"
         fig_tern.savefig(ternary_path, dpi=300, bbox_inches="tight")
         plt.close(fig_tern)
 
@@ -506,6 +506,9 @@ def plot_grouped_stacked_feature_importance_from_csvs(
     If `group_map` is provided, features are aggregated by group and the legend
     shows entries like "Deep Uncertainty (Scenario)".
     """
+    # Ensure years are integers and not floats
+    years = [int(yr) for yr in years]
+
     year_order = list(years)
     feature_order = feature_order if feature_order is not None else FEATURE_ORDER
     feature_colors = feature_colors if feature_colors is not None else FEATURE_COLORS
@@ -612,6 +615,7 @@ def plot_grouped_stacked_feature_importance_from_csvs(
         )
 
         if outfile:
+            print(f"[info] Saving figure to {outfile}")
             Path(outfile).parent.mkdir(parents=True, exist_ok=True)
             fig.savefig(outfile, dpi=300, bbox_inches="tight")
             plt.close(fig)
@@ -724,7 +728,7 @@ def render_all_grouped_stacked_charts(
         outfile = (
             None
             if output_dir is None
-            else str(Path(output_dir) / f"global_{stat}_{model_type}_stacked.png")
+            else str(Path(output_dir) / f"global_{stat}_{model_type}_stacked.svg")
         )
         kwargs["scope"] = "global"
         kwargs["output_file"] = outfile
@@ -733,7 +737,7 @@ def render_all_grouped_stacked_charts(
         outfile = (
             None
             if output_dir is None
-            else str(Path(output_dir) / f"regional_{stat}_{model_type}_stacked.png")
+            else str(Path(output_dir) / f"regional_{stat}_{model_type}_stacked.svg")
         )
         kwargs["scope"] = "regional"
         kwargs["output_file"] = outfile
