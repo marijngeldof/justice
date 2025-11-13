@@ -2336,24 +2336,6 @@ def visualize_tradeoffs(
             ].shape[0]
         print("Adjusted top indices:", top_indices)
 
-        # for file in input_data:
-        #     df_type = concatenated_df[concatenated_df["type"] == file]
-
-        #     top_indices[file] = (
-        #         df_type[objective_of_interest]
-        #         .nsmallest(int(df_type.shape[0] * top_percentage))
-        #         .index
-        #     )
-        # print(file, len(top_indices[file]))
-
-        # Now within the top_indices, find the index with lowest years_above_temperature_threshold
-        # if temperature_filter:
-        #     index = df_type.loc[top_indices[file]][
-        #         "years_above_temperature_threshold"
-        #     ].idxmin()
-        #     print(index)
-        #     top_indices[file] = [index]
-
     if scaling:
         # Printing min max values of the objectives
         print("Min and Max values of the objectives", list_of_objectives)
@@ -2389,11 +2371,11 @@ def visualize_tradeoffs(
                     # this is one of your highlighted solutions:
                     file_color = color_mapping[_type]
                     # make it thicker
-                    lw = linewidth * 3  # or whatever factor you like
+                    lw = linewidth * highlight_factor  # or whatever factor you like
                     break
 
             # gray lines at half‐opacity, best ones fully opaque
-            alpha_here = 0.2 if file_color == "gray" else 1.0
+            alpha_here = alpha if file_color == "gray" else 1.0
 
         else:
             file_color = color_mapping.get(row["type"], "green")
@@ -2442,7 +2424,6 @@ def visualize_tradeoffs(
             os.makedirs(path_to_output)
         # Save the plot as svg
         plt.savefig(path_to_output + "/" + output_file_name, dpi=300)
-        # plt.savefig(path_to_output + "/" + output_file_name, dpi=300)
 
     # Show the plot
     plt.show()
