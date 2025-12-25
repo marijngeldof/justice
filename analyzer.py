@@ -11,7 +11,9 @@ import json
 import os
 import random
 import warnings
-
+from pathlib import Path
+from justice.util.regional_configuration import build_macro_region_mapping
+from solvers.emodps.rbf import RBF
 
 from ema_workbench import (
     Model,
@@ -31,7 +33,7 @@ from ema_workbench.em_framework.optimization import (
     EpsNSGAII,
 )
 
-from justice.util.EMA_model_wrapper import model_wrapper_emodps
+from justice.util.EMA_model_wrapper import model_wrapper_emodps, model_wrapper_momadps
 from justice.util.data_loader import DataLoader
 from justice.util.enumerations import (
     Abatement,
@@ -76,7 +78,7 @@ class MSBorgMOEA(BorgMOEA):
             problem,
             epsilons,
             population_size=population_size,
-            borg_library_path="./libborgms.so",
+            borg_library_path="./libborgms.so",  # NOTE: For mac, use "./libborg.dylib", for linux use "./libborgms.so"
             solve_settings={},
             seed=None,  # keep Borg's internal RNG
             direct_evaluation=True,  # use the evaluation function registered in context
@@ -395,6 +397,228 @@ def run_optimization_adaptive(
     return results
 
 
+################################################################################################################################
+
+
+def run_optimization_momadps(
+    config_path,
+    nfe=None,
+    population_size=100,
+    seed=None,
+    datapath="./data",
+    economy_type=Economy.NEOCLASSICAL,
+    damage_function_type=DamageFunction.KALKUHL,
+    abatement_type=Abatement.ENERDATA,
+    optimizer=Optimizer.EpsNSGAII,
+    evaluator=Evaluator.SequentialEvaluator,
+    reference_ssp_rcp_scenario_index=2,
+    mapping_base_path="data/input",
+):
+    """Configure and run the MOMADPS optimization experiment."""
+    with open(config_path, "r", encoding="utf-8") as file:
+        config = json.load(file)
+
+    start_year = config["start_year"]
+    end_year = config["end_year"]
+    data_timestep = config["data_timestep"]
+    timestep = config["timestep"]
+    emission_control_start_year = config["emission_control_start_year"]
+    n_rbfs = config["n_rbfs"]
+    n_inputs = config["n_inputs"]  # expect 3 (T, ΔT, consumption)
+    epsilons = config["epsilons"]
+    temperature_year_of_interest = config["temperature_year_of_interest"]
+    stochastic_run = config["stochastic_run"]
+    climate_members = config.get("climate_ensemble_members")
+
+    min_temperature = config["min_temperature"]
+    max_temperature = config["max_temperature"]
+    min_temperature_change = config["min_temperature_change"]
+    max_temperature_change = config["max_temperature_change"]
+    consumption_min = config["consumption_min"]
+    consumption_max = config["consumption_max"]
+
+    model = Model("JUSTICE_MOMADPS", function=model_wrapper_momadps)
+
+    data_loader = DataLoader()
+    region_list = data_loader.REGION_LIST
+    n_regions = len(region_list)
+
+    time_horizon = TimeHorizon(
+        start_year=start_year,
+        end_year=end_year,
+        data_timestep=data_timestep,
+        timestep=timestep,
+    )
+    emission_start_ts = time_horizon.year_to_timestep(
+        year=emission_control_start_year, timestep=timestep
+    )
+    temperature_year_index = time_horizon.year_to_timestep(
+        year=temperature_year_of_interest, timestep=timestep
+    )
+
+    # Build macro-region mapping
+    r5_json = Path(mapping_base_path) / "R5_regions.json"
+    rice50_json = Path(mapping_base_path) / "rice50_regions_dict.json"
+    region_to_macro, macro_region_names = build_macro_region_mapping(
+        region_list=region_list,
+        r5_json_path=r5_json,
+        rice50_json_path=rice50_json,
+    )
+    n_macro_regions = len(macro_region_names)
+
+    # Constants fed into the wrapper
+    model.constants = [
+        Constant("n_regions", n_regions),
+        Constant("n_timesteps", len(time_horizon.model_time_horizon)),
+        Constant("emission_control_start_timestep", emission_start_ts),
+        Constant("n_rbfs", n_rbfs),
+        Constant("n_inputs_rbf", n_inputs),
+        Constant("n_outputs_rbf", 1),
+        Constant(
+            "social_welfare_function_type", WelfareFunction.from_index(0).value[0]
+        ),
+        Constant("economy_type", economy_type.value),
+        Constant("damage_function_type", damage_function_type.value),
+        Constant("abatement_type", abatement_type.value),
+        Constant("temperature_year_of_interest_index", temperature_year_index),
+        Constant("stochastic_run", stochastic_run),
+        Constant("climate_ensemble_members", climate_members),
+        Constant("region_to_macro", region_to_macro.tolist()),
+        Constant("macro_region_names", list(macro_region_names)),
+        Constant("n_macro_regions", n_macro_regions),
+        Constant("min_temperature", min_temperature),
+        Constant("max_temperature", max_temperature),
+        Constant("min_temperature_change", min_temperature_change),
+        Constant("max_temperature_change", max_temperature_change),
+        Constant("consumption_min", consumption_min),
+        Constant("consumption_max", consumption_max),
+    ]
+
+    model.uncertainties = [CategoricalParameter("ssp_rcp_scenario", tuple(range(8)))]
+
+    # Determine lever shapes from an RBF template
+    rbf_probe = RBF(
+        n_rbfs=(n_inputs + 2),
+        n_inputs=n_inputs,
+        n_outputs=1,
+    )
+    centers_shape, radii_shape, weights_shape = rbf_probe.get_shape()
+    centers_len, radii_len, weights_len = (
+        centers_shape[0],
+        radii_shape[0],
+        weights_shape[0],
+    )
+
+    levers = []
+    for macro_idx in range(n_macro_regions):
+        levers.extend(
+            RealParameter(f"center {macro_idx} {i}", -1.0, 1.0)
+            for i in range(centers_len)
+        )
+        levers.extend(
+            RealParameter(f"radii {macro_idx} {i}", SMALL_NUMBER, 1.0)
+            for i in range(radii_len)
+        )
+        levers.extend(
+            RealParameter(f"weights {macro_idx} {i}", SMALL_NUMBER, 1.0)
+            for i in range(weights_len)
+        )
+    model.levers = levers
+
+    # Outcomes: five macro welfare proxies + temperature objective
+    macro_outcomes = [
+        ScalarOutcome(
+            f"macro_welfare_{macro_name}",
+            variable_name=f"macro_welfare_{macro_name}",
+            kind=ScalarOutcome.MAXIMIZE,
+        )
+        for macro_name in macro_region_names
+    ]
+    model.outcomes = macro_outcomes + [
+        ScalarOutcome(
+            "fraction_above_threshold",
+            variable_name="fraction_above_threshold",
+            kind=ScalarOutcome.MINIMIZE,
+        )
+    ]
+
+    reference_scenario = Scenario(
+        "reference", ssp_rcp_scenario=reference_ssp_rcp_scenario_index
+    )
+
+    filename = f"MOMADPS_{nfe}_{seed}.tar.gz"
+    timestamp = datetime.datetime.now().strftime("%Y_%m")
+    random_number = random.randint(0, 10000)
+    directory_name = os.path.abspath(
+        os.path.join(
+            datapath,
+            f"MOMADPS_{timestamp}_{random_number}_ref{reference_ssp_rcp_scenario_index}_{seed}",
+        )
+    )
+    os.environ["BORG_RUNTIME_DIR"] = directory_name
+    os.makedirs(directory_name, exist_ok=True)
+
+    rank = _mpi_rank()
+    lever_names = [lever.name for lever in model.levers]
+    outcome_names = [outcome.name for outcome in model.outcomes]
+    if rank == 0:
+        convergence = [
+            ArchiveLogger(
+                directory_name, lever_names, outcome_names, base_filename=filename
+            ),
+            EpsilonProgress(),
+        ]
+    else:
+        convergence = []
+
+    optimizer_map = {
+        Optimizer.EpsNSGAII: EpsNSGAII,
+        Optimizer.MMBorgMOEA: MMBorgMOEA,
+        Optimizer.MSBorgMOEA: MSBorgMOEA,
+    }
+    algorithm_class = optimizer_map.get(optimizer)
+    if algorithm_class is None:
+        raise ValueError(f"Unsupported optimizer: {optimizer}")
+
+    set_ema_context(
+        model=model,
+        reference=reference_scenario,
+        evaluation=model_wrapper_momadps,
+        reference_index=reference_ssp_rcp_scenario_index,
+    )
+
+    evaluator_map = {
+        Evaluator.MPIEvaluator: MPIEvaluator,
+        Evaluator.MultiprocessingEvaluator: MultiprocessingEvaluator,
+        Evaluator.SequentialEvaluator: SequentialEvaluator,
+    }
+    evaluator_cls = evaluator_map[evaluator]
+
+    with evaluator_cls(model) as eval_ctx:
+        results = eval_ctx.optimize(
+            searchover="levers",
+            nfe=nfe,
+            epsilons=epsilons,
+            reference=reference_scenario,
+            convergence=convergence,
+            population_size=population_size,
+            algorithm=algorithm_class,
+        )
+
+    if (
+        rank == 0
+        and optimizer == Optimizer.MMBorgMOEA
+        and os.path.isdir(directory_name)
+    ):
+        header = lever_names + outcome_names
+        islands = int(os.environ.get("BORG_ISLANDS", "2"))
+        _create_intermediate_archives(directory_name, filename, islands, header)
+
+    return results
+
+
+###############################################################################################################################
+
 if __name__ == "__main__":
     config_path = "analysis/normative_uncertainty_optimization.json"
 
@@ -408,6 +632,6 @@ if __name__ == "__main__":
         datapath="./data",
         optimizer=Optimizer.MSBorgMOEA,  # Optimizer.MMBorgMOEA, Optimizer.EpsNSGAII
         population_size=2,  # default is 100. Test locally with 2
-        reference_ssp_rcp_scenario_index=2,
+        reference_ssp_rcp_scenario_index=2,  # NOTE #TODO Get this from config json
         evaluator=Evaluator.SequentialEvaluator,
     )
