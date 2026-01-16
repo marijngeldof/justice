@@ -437,7 +437,7 @@ def run_optimization_momadps(
     consumption_min = config["consumption_min"]
     consumption_max = config["consumption_max"]
 
-    model = Model("JUSTICE_MOMADPS", function=model_wrapper_momadps)
+    model = Model("JUSTICE", function=model_wrapper_momadps)
 
     data_loader = DataLoader()
     region_list = data_loader.REGION_LIST
@@ -525,21 +525,54 @@ def run_optimization_momadps(
         )
     model.levers = levers
 
-    # Outcomes: five macro welfare proxies + temperature objective
-    macro_outcomes = [
+    # # Outcomes: five macro welfare proxies + temperature objective
+    # macro_outcomes = [
+    #     ScalarOutcome(
+    #         f"macro_welfare_{macro_name}",
+    #         variable_name=f"macro_welfare_{macro_name}",
+    #         kind=ScalarOutcome.MAXIMIZE,
+    #     )
+    #     for macro_name in macro_region_names
+    # ]
+    # model.outcomes = macro_outcomes + [
+    #     ScalarOutcome(
+    #         "fraction_above_threshold",
+    #         variable_name="fraction_above_threshold",
+    #         kind=ScalarOutcome.MINIMIZE,
+    #     )
+    # ]
+
+    model.outcomes = [
         ScalarOutcome(
-            f"macro_welfare_{macro_name}",
-            variable_name=f"macro_welfare_{macro_name}",
+            f"macro_welfare_{macro_region_names[0]}",
+            variable_name=f"macro_welfare_{macro_region_names[0]}",
             kind=ScalarOutcome.MAXIMIZE,
-        )
-        for macro_name in macro_region_names
-    ]
-    model.outcomes = macro_outcomes + [
+        ),
+        ScalarOutcome(
+            f"macro_welfare_{macro_region_names[1]}",
+            variable_name=f"macro_welfare_{macro_region_names[1]}",
+            kind=ScalarOutcome.MAXIMIZE,
+        ),
+        ScalarOutcome(
+            f"macro_welfare_{macro_region_names[2]}",
+            variable_name=f"macro_welfare_{macro_region_names[2]}",
+            kind=ScalarOutcome.MAXIMIZE,
+        ),
+        ScalarOutcome(
+            f"macro_welfare_{macro_region_names[3]}",
+            variable_name=f"macro_welfare_{macro_region_names[3]}",
+            kind=ScalarOutcome.MAXIMIZE,
+        ),
+        ScalarOutcome(
+            f"macro_welfare_{macro_region_names[4]}",
+            variable_name=f"macro_welfare_{macro_region_names[4]}",
+            kind=ScalarOutcome.MAXIMIZE,
+        ),
         ScalarOutcome(
             "fraction_above_threshold",
             variable_name="fraction_above_threshold",
             kind=ScalarOutcome.MINIMIZE,
-        )
+        ),
     ]
 
     reference_scenario = Scenario(
@@ -618,6 +651,24 @@ def run_optimization_momadps(
 
 
 ###############################################################################################################################
+
+# if __name__ == "__main__":
+#     config_path = "analysis/momadps_config.json"
+
+#     ema_logging.log_to_stderr(ema_logging.INFO)
+
+#     run_optimization_momadps(
+#         config_path=config_path,
+#         nfe=10,
+#         # swf=0,
+#         seed=10,  # None for Borg. Any integer for reproducibility with other optimizers
+#         datapath="./data",
+#         optimizer=Optimizer.MSBorgMOEA,  # Optimizer.MMBorgMOEA, Optimizer.EpsNSGAII
+#         population_size=2,  # default is 100. Test locally with 2
+#         reference_ssp_rcp_scenario_index=2,  # NOTE #TODO Get this from config json
+#         evaluator=Evaluator.SequentialEvaluator,
+#     )
+
 
 if __name__ == "__main__":
     config_path = "analysis/normative_uncertainty_optimization.json"

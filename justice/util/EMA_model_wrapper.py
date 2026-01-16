@@ -17,6 +17,7 @@ from justice.objectives.objective_functions import (
 from justice.util.regional_configuration import aggregate_by_macro_region
 from justice.util.emission_control_constraint import EmissionControlConstraint
 
+
 # Scaling Values
 max_temperature = 16.0
 min_temperature = 0.0
@@ -293,11 +294,13 @@ def model_wrapper_momadps(**kwargs):
     previous_temperature = np.zeros(no_of_ensembles, dtype=float)
     previous_temperature_change = np.zeros(no_of_ensembles, dtype=float)
 
-    # For welfare objectives: accumulate mean consumption per macro each timestep
-    macro_consumption_accumulator = np.zeros(n_macro_regions, dtype=float)
-
     # Temporary buffer reused for RBF inputs
     rbf_input_buffer = np.empty((n_inputs_rbf, no_of_ensembles), dtype=float)
+
+    # Storage for macro-level consumption history
+    macro_consumption_history = np.zeros(
+        (n_macro_regions, n_timesteps, no_of_ensembles), dtype=float
+    )
 
     # --- Simulation loop ------------------------------------------------------------
     for timestep in range(n_timesteps):
@@ -319,7 +322,7 @@ def model_wrapper_momadps(**kwargs):
         global_temperature = datasets["global_temperature"][timestep, :]
         consumption_per_capita = datasets["consumption_per_capita"][:, timestep, :]
 
-        # Temperature rate of change updated every 5 timesteps (like original implementation)
+        # Temperature and rate of change (shared inputs)
         if timestep == 0:
             temperature_change = np.zeros_like(global_temperature)
             previous_temperature = global_temperature.copy()
@@ -331,7 +334,6 @@ def model_wrapper_momadps(**kwargs):
         else:
             temperature_change = previous_temperature_change
 
-        # Normalize temperature signals
         rbf_input_buffer[0, :] = np.clip(
             (global_temperature - min_temperature) * inv_temperature_range, 0.0, 1.0
         )
@@ -342,21 +344,20 @@ def model_wrapper_momadps(**kwargs):
             1.0,
         )
 
-        # Aggregate consumption to macro level and normalize
+        # Aggregate consumption to macro level, normalize, and store full history
         aggregated_consumption = aggregate_by_macro_region(
             consumption_per_capita, region_to_macro
         )
         macro_mean_consumption = aggregated_consumption / macro_region_counts
+        macro_consumption_history[:, timestep, :] = macro_mean_consumption
+
         normalized_macro_consumption = np.clip(
             (macro_mean_consumption - consumption_min) * inv_consumption_range,
             0.0,
             1.0,
         )
 
-        # Accumulate welfare metric (average over ensembles each timestep)
-        macro_consumption_accumulator += macro_mean_consumption.mean(axis=1)
-
-        # Apply macro RBF policies -> set emission control for next timestep
+        # RBFs observe current step signals and set emissions for next step
         if timestep < n_timesteps - 1:
             for macro_idx, rbf in enumerate(macro_rbfs):
                 rbf_input_buffer[2, :] = normalized_macro_consumption[macro_idx, :]
@@ -369,9 +370,11 @@ def model_wrapper_momadps(**kwargs):
 
     datasets = model.evaluate()
 
-    # Objectives: negative average consumption per macro region
-    macro_average_consumption = macro_consumption_accumulator / n_timesteps
-    macro_welfare_objectives = -macro_average_consumption
+    spatially_disaggregated_welfare = (
+        model.welfare_function.calculate_spatially_disaggregated_welfare(
+            macro_consumption_history
+        )
+    )
 
     fraction_above_threshold = fraction_of_ensemble_above_threshold(
         temperature=datasets["global_temperature"],
@@ -380,11 +383,11 @@ def model_wrapper_momadps(**kwargs):
     )
 
     return (
-        macro_welfare_objectives[0],
-        macro_welfare_objectives[1],
-        macro_welfare_objectives[2],
-        macro_welfare_objectives[3],
-        macro_welfare_objectives[4],
+        spatially_disaggregated_welfare[0],
+        spatially_disaggregated_welfare[1],
+        spatially_disaggregated_welfare[2],
+        spatially_disaggregated_welfare[3],
+        spatially_disaggregated_welfare[4],
         fraction_above_threshold,
     )
 
