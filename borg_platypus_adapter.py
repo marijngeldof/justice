@@ -320,10 +320,6 @@ class BorgMOEA(Algorithm):
             return list(s.objectives)
 
     def _evaluate_directly(self, casted_vars: List[Any]) -> tuple:
-        """
-        Evaluate by calling the user-provided callable stored in _EMA_CONTEXT.
-        Produces (objectives, constraints) in the same shape as `_evaluate_with_problem`.
-        """
         eval_fn = _EMA_CONTEXT.get("evaluation")
         mdl = _EMA_CONTEXT.get("model")
 
@@ -352,36 +348,50 @@ class BorgMOEA(Algorithm):
         lever_map = {name: val for name, val in zip(self._lever_names, casted_vars)}
         kwargs = {**base_kwargs, **lever_map}
 
-        out = eval_fn(**kwargs)
+        raw = eval_fn(**kwargs)
 
-        if isinstance(out, tuple):
-            w = out[0] if len(out) > 0 else 0.0
-            frac = out[1] if len(out) > 1 else 0.0
-        elif isinstance(out, dict):
-            names = self._outcome_names or list(out.keys())
-            w = out.get(names[0], 0.0)
-            frac = out.get(names[1], 0.0) if len(names) > 1 else 0.0
+        # Determine objectives/constraints based on type/length
+        objectives = None
+        constraints = None
+
+        if isinstance(raw, tuple):
+            # If we have constraints, and the tuple matches (objs, constr),
+            # interpret accordingly. Otherwise, treat entire tuple as objectives.
+            if (
+                len(raw) == 2
+                and getattr(self.problem, "nconstr", 0) > 0
+                and isinstance(raw[1], (list, tuple, np.ndarray))
+            ):
+                objectives, constraints = raw
+            else:
+                objectives = raw
+        elif isinstance(raw, dict):
+            # Map by outcome names if provided
+            names = self._outcome_names or list(raw.keys())
+            objectives = [raw[name] for name in names]
         else:
-            w, frac = out, 0.0
+            objectives = raw
 
-        w = (
-            float(np.asarray(w).mean())
-            if isinstance(w, (list, tuple, np.ndarray))
-            else float(w)
-        )
-        frac = (
-            float(np.asarray(frac).mean())
-            if isinstance(frac, (list, tuple, np.ndarray))
-            else float(frac)
-        )
+        # Convert to numpy array for convenience, then to float list
+        def _to_float_list(x):
+            arr = np.asarray(x, dtype=float).flatten()
+            return arr.tolist()
 
-        problem = self.problem
-        nconstr = getattr(problem, "nconstr", 0)
+        objectives = _to_float_list(objectives) if objectives is not None else []
 
+        nconstr = getattr(self.problem, "nconstr", 0)
         if nconstr:
-            return ([w, frac], [0.0] * nconstr)
+            if constraints is None:
+                constraints = [0.0] * nconstr
+            else:
+                constraints = _to_float_list(constraints)
+                if len(constraints) < nconstr:
+                    constraints += [0.0] * (nconstr - len(constraints))
+                else:
+                    constraints = constraints[:nconstr]
+            return objectives, constraints
         else:
-            return [w, frac]
+            return objectives
 
     # ------------------------------------------------------------------
     def _make_callback(self):

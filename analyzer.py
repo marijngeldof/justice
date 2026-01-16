@@ -14,9 +14,10 @@ import warnings
 from pathlib import Path
 from justice.util.regional_configuration import build_macro_region_mapping
 from solvers.emodps.rbf import RBF
-
+import numpy as np
 from ema_workbench import (
     Model,
+    Policy,
     RealParameter,
     ScalarOutcome,
     CategoricalParameter,
@@ -26,6 +27,7 @@ from ema_workbench import (
     MPIEvaluator,
     Constant,
     Scenario,
+    perform_experiments,
 )
 from ema_workbench.em_framework.optimization import (
     ArchiveLogger,
@@ -544,28 +546,28 @@ def run_optimization_momadps(
 
     model.outcomes = [
         ScalarOutcome(
-            f"macro_welfare_{macro_region_names[0]}",
-            variable_name=f"macro_welfare_{macro_region_names[0]}",
+            "macro_welfare_R5ASIA",
+            variable_name="macro_welfare_R5ASIA",
             kind=ScalarOutcome.MAXIMIZE,
         ),
         ScalarOutcome(
-            f"macro_welfare_{macro_region_names[1]}",
-            variable_name=f"macro_welfare_{macro_region_names[1]}",
+            "macro_welfare_R5LAM",
+            variable_name="macro_welfare_R5LAM",
             kind=ScalarOutcome.MAXIMIZE,
         ),
         ScalarOutcome(
-            f"macro_welfare_{macro_region_names[2]}",
-            variable_name=f"macro_welfare_{macro_region_names[2]}",
+            "macro_welfare_R5MAF",
+            variable_name="macro_welfare_R5MAF",
             kind=ScalarOutcome.MAXIMIZE,
         ),
         ScalarOutcome(
-            f"macro_welfare_{macro_region_names[3]}",
-            variable_name=f"macro_welfare_{macro_region_names[3]}",
+            "macro_welfare_R5OECD",
+            variable_name="macro_welfare_R5OECD",
             kind=ScalarOutcome.MAXIMIZE,
         ),
         ScalarOutcome(
-            f"macro_welfare_{macro_region_names[4]}",
-            variable_name=f"macro_welfare_{macro_region_names[4]}",
+            "macro_welfare_R5REF",
+            variable_name="macro_welfare_R5REF",
             kind=ScalarOutcome.MAXIMIZE,
         ),
         ScalarOutcome(
@@ -652,15 +654,188 @@ def run_optimization_momadps(
 
 ###############################################################################################################################
 
+
+def build_random_policy(model, seed=1234):
+    rng = np.random.default_rng(seed)
+    policy_data = {}
+    for lever in model.levers:
+        low, high = lever.lower_bound, lever.upper_bound
+        policy_data[lever.name] = rng.uniform(low, high)
+    return Policy("random_policy", **policy_data)
+
+
+def setup_model_from_config(config_path, mapping_base_path="data/input"):
+    with open(config_path, "r", encoding="utf-8") as file:
+        config = json.load(file)
+
+    start_year = config["start_year"]
+    end_year = config["end_year"]
+    data_timestep = config["data_timestep"]
+    timestep = config["timestep"]
+    emission_control_start_year = config["emission_control_start_year"]
+    n_rbfs = config["n_rbfs"]
+    n_inputs = config["n_inputs"]
+    temperature_year_of_interest = config["temperature_year_of_interest"]
+    stochastic_run = config["stochastic_run"]
+    climate_members = config.get("climate_ensemble_members")
+
+    min_temperature = config["min_temperature"]
+    max_temperature = config["max_temperature"]
+    min_temperature_change = config["min_temperature_change"]
+    max_temperature_change = config["max_temperature_change"]
+    consumption_min = config["consumption_min"]
+    consumption_max = config["consumption_max"]
+
+    model = Model("JUSTICE", function=model_wrapper_momadps)
+
+    data_loader = DataLoader()
+    region_list = data_loader.REGION_LIST
+    n_regions = len(region_list)
+
+    time_horizon = TimeHorizon(
+        start_year=start_year,
+        end_year=end_year,
+        data_timestep=data_timestep,
+        timestep=timestep,
+    )
+    emission_start_ts = time_horizon.year_to_timestep(
+        year=emission_control_start_year, timestep=timestep
+    )
+    temperature_year_index = time_horizon.year_to_timestep(
+        year=temperature_year_of_interest, timestep=timestep
+    )
+
+    r5_json = Path(mapping_base_path) / "R5_regions.json"
+    rice50_json = Path(mapping_base_path) / "rice50_regions_dict.json"
+    region_to_macro, macro_region_names = build_macro_region_mapping(
+        region_list=region_list,
+        r5_json_path=r5_json,
+        rice50_json_path=rice50_json,
+    )
+    n_macro_regions = len(macro_region_names)
+
+    model.constants = [
+        Constant("n_regions", n_regions),
+        Constant("n_timesteps", len(time_horizon.model_time_horizon)),
+        Constant("emission_control_start_timestep", emission_start_ts),
+        Constant("n_rbfs", n_rbfs),
+        Constant("n_inputs_rbf", n_inputs),
+        Constant("n_outputs_rbf", 1),
+        Constant(
+            "social_welfare_function_type", WelfareFunction.from_index(0).value[0]
+        ),
+        Constant("economy_type", Economy.NEOCLASSICAL.value),
+        Constant("damage_function_type", DamageFunction.KALKUHL.value),
+        Constant("abatement_type", Abatement.ENERDATA.value),
+        Constant("temperature_year_of_interest_index", temperature_year_index),
+        Constant("stochastic_run", stochastic_run),
+        Constant("climate_ensemble_members", climate_members),
+        Constant("region_to_macro", region_to_macro.tolist()),
+        Constant("macro_region_names", list(macro_region_names)),
+        Constant("n_macro_regions", n_macro_regions),
+        Constant("min_temperature", min_temperature),
+        Constant("max_temperature", max_temperature),
+        Constant("min_temperature_change", min_temperature_change),
+        Constant("max_temperature_change", max_temperature_change),
+        Constant("consumption_min", consumption_min),
+        Constant("consumption_max", consumption_max),
+    ]
+
+    model.uncertainties = [CategoricalParameter("ssp_rcp_scenario", tuple(range(8)))]
+
+    rbf_probe = model_wrapper_momadps.__globals__["RBF"](
+        n_rbfs=(n_inputs + 2),
+        n_inputs=n_inputs,
+        n_outputs=1,
+    )
+    centers_shape, radii_shape, weights_shape = rbf_probe.get_shape()
+    centers_len, radii_len, weights_len = (
+        centers_shape[0],
+        radii_shape[0],
+        weights_shape[0],
+    )
+
+    levers = []
+    for macro_idx in range(n_macro_regions):
+        levers.extend(
+            RealParameter(f"center {macro_idx} {i}", -1.0, 1.0)
+            for i in range(centers_len)
+        )
+        levers.extend(
+            RealParameter(f"radii {macro_idx} {i}", SMALL_NUMBER, 1.0)
+            for i in range(radii_len)
+        )
+        levers.extend(
+            RealParameter(f"weights {macro_idx} {i}", SMALL_NUMBER, 1.0)
+            for i in range(weights_len)
+        )
+    model.levers = levers
+
+    model.outcomes = [
+        ScalarOutcome(
+            "macro_welfare_R5ASIA",
+            variable_name="macro_welfare_R5ASIA",
+            kind=ScalarOutcome.MAXIMIZE,
+        ),
+        ScalarOutcome(
+            "macro_welfare_R5LAM",
+            variable_name="macro_welfare_R5LAM",
+            kind=ScalarOutcome.MAXIMIZE,
+        ),
+        ScalarOutcome(
+            "macro_welfare_R5MAF",
+            variable_name="macro_welfare_R5MAF",
+            kind=ScalarOutcome.MAXIMIZE,
+        ),
+        ScalarOutcome(
+            "macro_welfare_R5OECD",
+            variable_name="macro_welfare_R5OECD",
+            kind=ScalarOutcome.MAXIMIZE,
+        ),
+        ScalarOutcome(
+            "macro_welfare_R5REF",
+            variable_name="macro_welfare_R5REF",
+            kind=ScalarOutcome.MAXIMIZE,
+        ),
+        ScalarOutcome(
+            "fraction_above_threshold",
+            variable_name="fraction_above_threshold",
+            kind=ScalarOutcome.MINIMIZE,
+        ),
+    ]
+
+    return model, macro_region_names
+
+
+###############################################################################################################################
+
+if __name__ == "__main__":
+    config_path = "analysis/momadps_config.json"
+
+    ema_logging.log_to_stderr(ema_logging.INFO)
+
+    run_optimization_momadps(
+        config_path=config_path,
+        nfe=50,
+        # swf=0,
+        seed=10,  # None for Borg. Any integer for reproducibility with other optimizers
+        datapath="./data",
+        optimizer=Optimizer.MSBorgMOEA,  # Optimizer.MMBorgMOEA, Optimizer.EpsNSGAII
+        population_size=2,  # default is 100. Test locally with 2
+        reference_ssp_rcp_scenario_index=2,  # NOTE #TODO Get this from config json
+        evaluator=Evaluator.SequentialEvaluator,
+    )
+
+
 # if __name__ == "__main__":
-#     config_path = "analysis/momadps_config.json"
+#     config_path = "analysis/normative_uncertainty_optimization.json"
 
 #     ema_logging.log_to_stderr(ema_logging.INFO)
 
-#     run_optimization_momadps(
+#     run_optimization_adaptive(
 #         config_path=config_path,
 #         nfe=10,
-#         # swf=0,
+#         swf=0,
 #         seed=10,  # None for Borg. Any integer for reproducibility with other optimizers
 #         datapath="./data",
 #         optimizer=Optimizer.MSBorgMOEA,  # Optimizer.MMBorgMOEA, Optimizer.EpsNSGAII
@@ -670,19 +845,27 @@ def run_optimization_momadps(
 #     )
 
 
-if __name__ == "__main__":
-    config_path = "analysis/normative_uncertainty_optimization.json"
+###############################################################################################################################
 
-    ema_logging.log_to_stderr(ema_logging.INFO)
+# if __name__ == "__main__":
+#     config_path = "analysis/momadps_config.json"
 
-    run_optimization_adaptive(
-        config_path=config_path,
-        nfe=10,
-        swf=0,
-        seed=10,  # None for Borg. Any integer for reproducibility with other optimizers
-        datapath="./data",
-        optimizer=Optimizer.MSBorgMOEA,  # Optimizer.MMBorgMOEA, Optimizer.EpsNSGAII
-        population_size=2,  # default is 100. Test locally with 2
-        reference_ssp_rcp_scenario_index=2,  # NOTE #TODO Get this from config json
-        evaluator=Evaluator.SequentialEvaluator,
-    )
+#     model, macro_region_names = setup_model_from_config(config_path)
+
+#     reference_scenario = Scenario("debug", ssp_rcp_scenario=2)
+#     policy = build_random_policy(model, seed=42)
+
+#     with SequentialEvaluator(model) as evaluator:
+#         experiments, outcomes = perform_experiments(
+#             model,
+#             scenarios=[reference_scenario],
+#             policies=[policy],
+#             evaluator=evaluator,
+#         )
+
+#     print("Experiment outcomes:")
+#     for name, values in outcomes.items():
+#         print(f"{name}: {values}")
+
+#     print("\nPolicy used:")
+#     print(dict(policy))

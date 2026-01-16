@@ -383,12 +383,12 @@ def model_wrapper_momadps(**kwargs):
     )
 
     return (
-        spatially_disaggregated_welfare[0],
-        spatially_disaggregated_welfare[1],
-        spatially_disaggregated_welfare[2],
-        spatially_disaggregated_welfare[3],
-        spatially_disaggregated_welfare[4],
-        fraction_above_threshold,
+        float(spatially_disaggregated_welfare[0]),
+        float(spatially_disaggregated_welfare[1]),
+        float(spatially_disaggregated_welfare[2]),
+        float(spatially_disaggregated_welfare[3]),
+        float(spatially_disaggregated_welfare[4]),
+        float(fraction_above_threshold),
     )
 
 
