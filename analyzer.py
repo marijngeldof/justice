@@ -425,7 +425,7 @@ def run_optimization_momadps(
     data_timestep = config["data_timestep"]
     timestep = config["timestep"]
     emission_control_start_year = config["emission_control_start_year"]
-    n_rbfs = config["n_rbfs"]
+    # n_rbfs = config["n_rbfs"]
     n_inputs = config["n_inputs"]  # expect 3 (T, ΔT, consumption)
     epsilons = config["epsilons"]
     temperature_year_of_interest = config["temperature_year_of_interest"]
@@ -473,7 +473,7 @@ def run_optimization_momadps(
         Constant("n_regions", n_regions),
         Constant("n_timesteps", len(time_horizon.model_time_horizon)),
         Constant("emission_control_start_timestep", emission_start_ts),
-        Constant("n_rbfs", n_rbfs),
+        # Constant("n_rbfs", n_rbfs),
         Constant("n_inputs_rbf", n_inputs),
         Constant("n_outputs_rbf", 1),
         Constant(
@@ -526,23 +526,6 @@ def run_optimization_momadps(
             for i in range(weights_len)
         )
     model.levers = levers
-
-    # # Outcomes: five macro welfare proxies + temperature objective
-    # macro_outcomes = [
-    #     ScalarOutcome(
-    #         f"macro_welfare_{macro_name}",
-    #         variable_name=f"macro_welfare_{macro_name}",
-    #         kind=ScalarOutcome.MAXIMIZE,
-    #     )
-    #     for macro_name in macro_region_names
-    # ]
-    # model.outcomes = macro_outcomes + [
-    #     ScalarOutcome(
-    #         "fraction_above_threshold",
-    #         variable_name="fraction_above_threshold",
-    #         kind=ScalarOutcome.MINIMIZE,
-    #     )
-    # ]
 
     model.outcomes = [
         ScalarOutcome(
@@ -656,6 +639,14 @@ def run_optimization_momadps(
 
 
 def build_random_policy(model, seed=1234):
+    """
+    This is for testing purposes only: builds a random policy within the lever bounds.
+
+    Args:
+        model (ema_workbench.Model): The EMA Workbench model with defined levers.
+        seed (int): Random seed for reproducibility.
+    """
+
     rng = np.random.default_rng(seed)
     policy_data = {}
     for lever in model.levers:
