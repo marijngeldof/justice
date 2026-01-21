@@ -4,7 +4,6 @@
     "data_timestep": 5,
     "timestep": 1,
     "emission_control_start_year": 2025,
-    "n_rbfs": 4,
     "n_inputs": 3,
     "epsilons": [
         10,
@@ -74,6 +73,6 @@
                 542,
                 136
             ],
-    "stochastic_run": 1,
+    "stochastic_run": 0,
     "temperature_year_of_interest": 2100
 }

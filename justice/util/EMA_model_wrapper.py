@@ -227,8 +227,8 @@ def model_wrapper_momadps(**kwargs):
 
     # Macro-region setup
     region_to_macro = np.asarray(kwargs.pop("region_to_macro"), dtype=np.intp)
-    macro_region_names = kwargs.pop("macro_region_names")
     n_macro_regions = kwargs.pop("n_macro_regions")
+
     macro_region_counts = np.bincount(
         region_to_macro, minlength=n_macro_regions
     ).astype(float)
@@ -298,10 +298,14 @@ def model_wrapper_momadps(**kwargs):
     rbf_input_buffer = np.empty((n_inputs_rbf, no_of_ensembles), dtype=float)
 
     # Storage for macro-level consumption history
-    macro_consumption_history = np.zeros(
+    macro_consumption_per_capita_history = np.zeros(
         (n_macro_regions, n_timesteps, no_of_ensembles), dtype=float
     )
 
+    population = model.economy.get_population()  # Getting population from the model
+    population = aggregate_by_macro_region(
+        population, region_to_macro
+    )  # Aggregating to macro regions
     # --- Simulation loop ------------------------------------------------------------
     for timestep in range(n_timesteps):
         constrained_emission_control_rate[:, timestep, :] = (
@@ -320,7 +324,9 @@ def model_wrapper_momadps(**kwargs):
         datasets = model.stepwise_evaluate(timestep=timestep)
 
         global_temperature = datasets["global_temperature"][timestep, :]
-        consumption_per_capita = datasets["consumption_per_capita"][:, timestep, :]
+
+        consumption = datasets["consumption"][:, timestep, :]
+        consumption = consumption * 1e3
 
         # Temperature and rate of change (shared inputs)
         if timestep == 0:
@@ -345,22 +351,33 @@ def model_wrapper_momadps(**kwargs):
         )
 
         # Aggregate consumption to macro level, normalize, and store full history
-        aggregated_consumption = aggregate_by_macro_region(
-            consumption_per_capita, region_to_macro
+        aggregated_consumption = aggregate_by_macro_region(  # Use consumption here
+            consumption, region_to_macro
         )
-        macro_mean_consumption = aggregated_consumption / macro_region_counts
-        macro_consumption_history[:, timestep, :] = macro_mean_consumption
 
-        normalized_macro_consumption = np.clip(
-            (macro_mean_consumption - consumption_min) * inv_consumption_range,
-            0.0,
-            1.0,
+        aggregated_consumption_per_capita = (
+            aggregated_consumption / population[:, timestep, :]
+        )
+
+        macro_consumption_per_capita_history[:, timestep, :] = (
+            aggregated_consumption_per_capita
+        )
+
+        normalized_aggregated_consumption_per_capita = (
+            np.clip(  # TODO Check this normalization
+                (aggregated_consumption_per_capita - consumption_min)
+                * inv_consumption_range,
+                0.0,
+                1.0,
+            )
         )
 
         # RBFs observe current step signals and set emissions for next step
         if timestep < n_timesteps - 1:
             for macro_idx, rbf in enumerate(macro_rbfs):
-                rbf_input_buffer[2, :] = normalized_macro_consumption[macro_idx, :]
+                rbf_input_buffer[2, :] = normalized_aggregated_consumption_per_capita[
+                    macro_idx, :
+                ]
                 macro_output = rbf.apply_rbfs(rbf_input_buffer)
                 macro_emission_control_rate[macro_idx, timestep + 1, :] = macro_output
 
@@ -372,7 +389,7 @@ def model_wrapper_momadps(**kwargs):
 
     spatially_disaggregated_welfare = (
         model.welfare_function.calculate_spatially_disaggregated_welfare(
-            macro_consumption_history
+            macro_consumption_per_capita_history
         )
     )
 
