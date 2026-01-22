@@ -190,7 +190,7 @@ def _extract_vector(kwargs_dict, prefix, size, macro_idx):
     return vector
 
 
-# --- Wrapper ----------------------------------------------------------------------
+# --- MOMA Wrapper ----------------------------------------------------------------------
 def model_wrapper_momadps(**kwargs):
     scenario = kwargs.pop("ssp_rcp_scenario")
     social_welfare_function_type = kwargs.pop("social_welfare_function_type")
@@ -405,6 +405,222 @@ def model_wrapper_momadps(**kwargs):
         float(spatially_disaggregated_welfare[2]),
         float(spatially_disaggregated_welfare[3]),
         float(spatially_disaggregated_welfare[4]),
+        float(fraction_above_threshold),
+    )
+
+
+# ---------------------------MOMA Single Agent----------------------------------------------------------------#
+
+
+def model_wrapper_momadps_single_agent(**kwargs):
+    """
+    Variant of the MOMADPS wrapper for single-agent re-optimization.
+    Only the RBF of `variable_macro_index` is free to change; all others are fixed
+    to a prior (Pareto-Nash) solution supplied via fixed_centers/radii/weights.
+    """
+    scenario = kwargs.pop("ssp_rcp_scenario")
+    social_welfare_function_type = kwargs.pop("social_welfare_function_type")
+
+    economy_type = Economy.from_index(kwargs.pop("economy_type"))
+    damage_function_type = DamageFunction.from_index(kwargs.pop("damage_function_type"))
+    abatement_type = Abatement.from_index(kwargs.pop("abatement_type"))
+    stochastic_run = kwargs.pop("stochastic_run")
+
+    n_regions = kwargs.pop("n_regions")
+    n_timesteps = kwargs.pop("n_timesteps")
+    emission_control_start_timestep = kwargs.pop("emission_control_start_timestep")
+
+    n_inputs_rbf = kwargs.pop("n_inputs_rbf")
+    n_outputs_rbf = kwargs.pop("n_outputs_rbf")
+    temperature_year_of_interest_index = kwargs.pop(
+        "temperature_year_of_interest_index"
+    )
+    climate_ensemble_members = kwargs.pop("climate_ensemble_members")
+
+    # Normalization parameters
+    min_temperature = kwargs.pop("min_temperature")
+    max_temperature = kwargs.pop("max_temperature")
+    min_temperature_change = kwargs.pop("min_temperature_change")
+    max_temperature_change = kwargs.pop("max_temperature_change")
+    consumption_min = kwargs.pop("consumption_min")
+    consumption_max = kwargs.pop("consumption_max")
+
+    inv_temperature_range = _compute_inverse_range(min_temperature, max_temperature)
+    inv_temperature_change_range = _compute_inverse_range(
+        min_temperature_change, max_temperature_change
+    )
+    inv_consumption_range = _compute_inverse_range(consumption_min, consumption_max)
+
+    # Macro-region setup
+    region_to_macro = np.asarray(kwargs.pop("region_to_macro"), dtype=np.intp)
+    n_macro_regions = kwargs.pop("n_macro_regions")
+
+    # Which macro region is being (re)optimized
+    variable_macro_index = kwargs.pop("variable_macro_index")
+
+    # Fixed RBF parameters from the Pareto-Nash solution (constants)
+    fixed_centers = np.asarray(kwargs.pop("fixed_centers"), dtype=float)
+    fixed_radii = np.asarray(kwargs.pop("fixed_radii"), dtype=float)
+    fixed_weights = np.asarray(kwargs.pop("fixed_weights"), dtype=float)
+
+    macro_region_counts = np.bincount(
+        region_to_macro, minlength=n_macro_regions
+    ).astype(float)
+    macro_region_counts = macro_region_counts[:, None]
+
+    # RBF parameter shapes
+    rbf_template = RBF(
+        n_rbfs=(n_inputs_rbf + 2), n_inputs=n_inputs_rbf, n_outputs=n_outputs_rbf
+    )
+    centers_shape, radii_shape, weights_shape = rbf_template.get_shape()
+    centers_len, radii_len, weights_len = (
+        centers_shape[0],
+        radii_shape[0],
+        weights_shape[0],
+    )
+
+    # Build the RBF set: only one macro uses lever values; others use fixed
+    macro_rbfs = []
+    for macro_idx in range(n_macro_regions):
+        if macro_idx == variable_macro_index:
+            centers = _extract_vector(kwargs, "center", centers_len, macro_idx)
+            radii = _extract_vector(kwargs, "radii", radii_len, macro_idx)
+            weights = _extract_vector(kwargs, "weights", weights_len, macro_idx)
+        else:
+            centers = fixed_centers[macro_idx]
+            radii = fixed_radii[macro_idx]
+            weights = fixed_weights[macro_idx]
+
+        rbf = RBF(
+            n_rbfs=(n_inputs_rbf + 2), n_inputs=n_inputs_rbf, n_outputs=n_outputs_rbf
+        )
+        decision_vars = np.concatenate((centers, radii, weights))
+        rbf.set_decision_vars(decision_vars)
+        macro_rbfs.append(rbf)
+
+    emission_constraint = EmissionControlConstraint(
+        max_annual_growth_rate=0.04,
+        emission_control_start_timestep=emission_control_start_timestep,
+        min_emission_control_rate=0.01,
+    )
+
+    # JUSTICE singleton handling
+    if not hasattr(model_wrapper_momadps_single_agent, "justice_instance"):
+        model_wrapper_momadps_single_agent.justice_instance = JUSTICE(
+            scenario=scenario,
+            economy_type=economy_type,
+            damage_function_type=damage_function_type,
+            abatement_type=abatement_type,
+            social_welfare_function_type=social_welfare_function_type,
+            stochastic_run=stochastic_run,
+            climate_ensembles=climate_ensemble_members,
+        )
+    else:
+        model_wrapper_momadps_single_agent.justice_instance.reset_model()
+
+    model = model_wrapper_momadps_single_agent.justice_instance
+    no_of_ensembles = model.no_of_ensembles
+
+    # Buffers
+    regional_emission_control_rate = np.zeros(
+        (n_regions, n_timesteps, no_of_ensembles), dtype=float
+    )
+    constrained_emission_control_rate = np.zeros_like(regional_emission_control_rate)
+    macro_emission_control_rate = np.zeros(
+        (n_macro_regions, n_timesteps, no_of_ensembles), dtype=float
+    )
+
+    previous_temperature = np.zeros(no_of_ensembles, dtype=float)
+    previous_temperature_change = np.zeros(no_of_ensembles, dtype=float)
+
+    rbf_input_buffer = np.empty((n_inputs_rbf, no_of_ensembles), dtype=float)
+    macro_consumption_per_capita_history = np.zeros(
+        (n_macro_regions, n_timesteps, no_of_ensembles), dtype=float
+    )
+
+    population = model.economy.get_population()
+    population = aggregate_by_macro_region(population, region_to_macro)
+
+    # Simulation loop
+    for timestep in range(n_timesteps):
+        constrained_emission_control_rate[:, timestep, :] = (
+            emission_constraint.constrain_emission_control_rate(
+                regional_emission_control_rate[:, timestep, :],
+                timestep,
+                allow_fallback=False,
+            )
+        )
+
+        model.stepwise_run(
+            emission_control_rate=constrained_emission_control_rate[:, timestep, :],
+            timestep=timestep,
+            endogenous_savings_rate=True,
+        )
+        datasets = model.stepwise_evaluate(timestep=timestep)
+
+        global_temperature = datasets["global_temperature"][timestep, :]
+        consumption = datasets["consumption"][:, timestep, :] * 1e3
+
+        if timestep == 0:
+            temperature_change = np.zeros_like(global_temperature)
+            previous_temperature = global_temperature.copy()
+            previous_temperature_change = temperature_change.copy()
+        elif timestep % 5 == 0:
+            temperature_change = global_temperature - previous_temperature
+            previous_temperature = global_temperature.copy()
+            previous_temperature_change = temperature_change.copy()
+        else:
+            temperature_change = previous_temperature_change
+
+        rbf_input_buffer[0, :] = np.clip(
+            (global_temperature - min_temperature) * inv_temperature_range, 0.0, 1.0
+        )
+        rbf_input_buffer[1, :] = np.clip(
+            (temperature_change - min_temperature_change)
+            * inv_temperature_change_range,
+            0.0,
+            1.0,
+        )
+
+        aggregated_consumption = aggregate_by_macro_region(consumption, region_to_macro)
+        aggregated_consumption_per_capita = (
+            aggregated_consumption / population[:, timestep, :]
+        )
+        macro_consumption_per_capita_history[:, timestep, :] = (
+            aggregated_consumption_per_capita
+        )
+        normalized_consumption = np.clip(
+            (aggregated_consumption_per_capita - consumption_min)
+            * inv_consumption_range,
+            0.0,
+            1.0,
+        )
+
+        if timestep < n_timesteps - 1:
+            for macro_idx, rbf in enumerate(macro_rbfs):
+                rbf_input_buffer[2, :] = normalized_consumption[macro_idx, :]
+                macro_output = rbf.apply_rbfs(rbf_input_buffer)
+                macro_emission_control_rate[macro_idx, timestep + 1, :] = macro_output
+
+            regional_emission_control_rate[:, timestep + 1, :] = (
+                macro_emission_control_rate[region_to_macro, timestep + 1, :]
+            )
+
+    datasets = model.evaluate()
+
+    spatial_welfare = model.welfare_function.calculate_spatially_disaggregated_welfare(
+        macro_consumption_per_capita_history
+    )
+    agent_welfare = float(spatial_welfare[variable_macro_index])
+
+    fraction_above_threshold = fraction_of_ensemble_above_threshold(
+        temperature=datasets["global_temperature"],
+        temperature_year_index=temperature_year_of_interest_index,
+        threshold=2.0,
+    )
+
+    return (
+        agent_welfare,
         float(fraction_above_threshold),
     )
 

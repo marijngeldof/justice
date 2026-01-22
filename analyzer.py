@@ -10,8 +10,10 @@ import datetime
 import json
 import os
 import random
+import pandas as pd
 import warnings
 from pathlib import Path
+from typing import Optional
 from justice.util.regional_configuration import build_macro_region_mapping
 from solvers.emodps.rbf import RBF
 import numpy as np
@@ -35,7 +37,11 @@ from ema_workbench.em_framework.optimization import (
     EpsNSGAII,
 )
 
-from justice.util.EMA_model_wrapper import model_wrapper_emodps, model_wrapper_momadps
+from justice.util.EMA_model_wrapper import (
+    model_wrapper_emodps,
+    model_wrapper_momadps,
+    model_wrapper_momadps_single_agent,
+)
 from justice.util.data_loader import DataLoader
 from justice.util.enumerations import (
     Abatement,
@@ -638,6 +644,273 @@ def run_optimization_momadps(
 ###############################################################################################################################
 
 
+def run_single_agent_momadps(
+    config_path: str,
+    reference_set_path: str,
+    policy_index: int,
+    variable_macro_index: int,
+    nfe: Optional[int] = None,
+    population_size: int = 100,
+    seed: Optional[int] = None,
+    datapath: str = "./data",
+    economy_type: Economy = Economy.NEOCLASSICAL,
+    damage_function_type: DamageFunction = DamageFunction.KALKUHL,
+    abatement_type: Abatement = Abatement.ENERDATA,
+    optimizer: Optimizer = Optimizer.EpsNSGAII,
+    evaluator: Evaluator = Evaluator.SequentialEvaluator,
+    reference_ssp_rcp_scenario_index: int = 2,
+    mapping_base_path: str = "data/input",
+    epsilons: Optional[list[float]] = None,
+):
+    """
+    Re-run an adaptive MOMADPS optimization where only one macro agent is allowed to
+    adjust its RBF parameters, while the other four remain fixed at a known Pareto-Nash
+    solution (from `reference_set_path`, row `policy_index`).
+
+    The objectives:
+        * Maximize the selected agent's welfare (macro-specific).
+        * Minimize the fraction of ensemble runs above the temperature threshold.
+
+    Other infrastructure mirrors the multi-agent analyzer logic.
+    """
+
+    with open(config_path, "r", encoding="utf-8") as file:
+        config = json.load(file)
+
+    reference_df = pd.read_csv(reference_set_path)
+    if policy_index < -len(reference_df) or policy_index >= len(reference_df):
+        raise IndexError(
+            f"policy_index={policy_index} is out of bounds for CSV with {len(reference_df)} rows."
+        )
+    policy_row = reference_df.iloc[int(policy_index)]
+
+    start_year = config["start_year"]
+    end_year = config["end_year"]
+    data_timestep = config["data_timestep"]
+    timestep = config["timestep"]
+    emission_control_start_year = config["emission_control_start_year"]
+    n_inputs = config["n_inputs"]
+    temperature_year_of_interest = config["temperature_year_of_interest"]
+    stochastic_run = config["stochastic_run"]
+    climate_members = config.get("climate_ensemble_members")
+
+    min_temperature = config["min_temperature"]
+    max_temperature = config["max_temperature"]
+    min_temperature_change = config["min_temperature_change"]
+    max_temperature_change = config["max_temperature_change"]
+    consumption_min = config["consumption_min"]
+    consumption_max = config["consumption_max"]
+
+    data_loader = DataLoader()
+    region_list = data_loader.REGION_LIST
+    n_regions = len(region_list)
+
+    time_horizon = TimeHorizon(
+        start_year=start_year,
+        end_year=end_year,
+        data_timestep=data_timestep,
+        timestep=timestep,
+    )
+    emission_start_ts = time_horizon.year_to_timestep(
+        year=emission_control_start_year, timestep=timestep
+    )
+    temperature_year_index = time_horizon.year_to_timestep(
+        year=temperature_year_of_interest, timestep=timestep
+    )
+
+    r5_json = Path(mapping_base_path) / "R5_regions.json"
+    rice50_json = Path(mapping_base_path) / "rice50_regions_dict.json"
+    region_to_macro, macro_region_names = build_macro_region_mapping(
+        region_list=region_list,
+        r5_json_path=r5_json,
+        rice50_json_path=rice50_json,
+    )
+    n_macro_regions = len(macro_region_names)
+
+    if not (0 <= variable_macro_index < n_macro_regions):
+        raise ValueError(
+            f"variable_macro_index={variable_macro_index} invalid; must be in [0, {n_macro_regions-1}]"
+        )
+
+    model = Model("JUSTICE", function=model_wrapper_momadps_single_agent)
+
+    rbf_probe = RBF(
+        n_rbfs=(n_inputs + 2),
+        n_inputs=n_inputs,
+        n_outputs=1,
+    )
+    centers_shape, radii_shape, weights_shape = rbf_probe.get_shape()
+    centers_len, radii_len, weights_len = (
+        centers_shape[0],
+        radii_shape[0],
+        weights_shape[0],
+    )
+
+    fixed_centers = np.zeros((n_macro_regions, centers_len), dtype=float)
+    fixed_radii = np.zeros((n_macro_regions, radii_len), dtype=float)
+    fixed_weights = np.zeros((n_macro_regions, weights_len), dtype=float)
+
+    for macro_idx in range(n_macro_regions):
+        for i in range(centers_len):
+            fixed_centers[macro_idx, i] = policy_row[f"center {macro_idx} {i}"]
+            fixed_radii[macro_idx, i] = policy_row[f"radii {macro_idx} {i}"]
+        for i in range(weights_len):
+            fixed_weights[macro_idx, i] = policy_row[f"weights {macro_idx} {i}"]
+
+    model.constants = [
+        Constant("n_regions", n_regions),
+        Constant("n_timesteps", len(time_horizon.model_time_horizon)),
+        Constant("emission_control_start_timestep", emission_start_ts),
+        Constant("n_inputs_rbf", n_inputs),
+        Constant("n_outputs_rbf", 1),
+        Constant("social_welfare_function_type", WelfareFunction.UTILITARIAN.value[0]),
+        Constant("economy_type", economy_type.value),
+        Constant("damage_function_type", damage_function_type.value),
+        Constant("abatement_type", abatement_type.value),
+        Constant("temperature_year_of_interest_index", temperature_year_index),
+        Constant("stochastic_run", stochastic_run),
+        Constant("climate_ensemble_members", climate_members),
+        Constant("region_to_macro", region_to_macro.tolist()),
+        Constant("macro_region_names", list(macro_region_names)),  # <— add this
+        Constant("n_macro_regions", n_macro_regions),
+        Constant("min_temperature", min_temperature),
+        Constant("max_temperature", max_temperature),
+        Constant("min_temperature_change", min_temperature_change),
+        Constant("max_temperature_change", max_temperature_change),
+        Constant("consumption_min", consumption_min),
+        Constant("consumption_max", consumption_max),
+        Constant("variable_macro_index", variable_macro_index),
+        Constant("fixed_centers", fixed_centers.tolist()),
+        Constant("fixed_radii", fixed_radii.tolist()),
+        Constant("fixed_weights", fixed_weights.tolist()),
+    ]
+
+    algorithm_map = {
+        Optimizer.EpsNSGAII: EpsNSGAII,
+        Optimizer.MMBorgMOEA: MMBorgMOEA,
+        Optimizer.MSBorgMOEA: MSBorgMOEA,
+    }
+    algorithm_class = algorithm_map.get(optimizer)
+    if algorithm_class is None:
+        raise ValueError(f"Unsupported optimizer: {optimizer}")
+
+    model.uncertainties = [CategoricalParameter("ssp_rcp_scenario", tuple(range(8)))]
+
+    levers = []
+    for i in range(centers_len):
+        levers.append(
+            RealParameter(
+                f"center {variable_macro_index} {i}",
+                -1.0,
+                1.0,
+            )
+        )
+    for i in range(radii_len):
+        levers.append(
+            RealParameter(
+                f"radii {variable_macro_index} {i}",
+                SMALL_NUMBER,
+                1.0,
+            )
+        )
+    for i in range(weights_len):
+        levers.append(
+            RealParameter(
+                f"weights {variable_macro_index} {i}",
+                SMALL_NUMBER,
+                1.0,
+            )
+        )
+    model.levers = levers
+
+    if epsilons is None:
+        epsilons = [1e-3, 1e-3]
+
+    agent_name = macro_region_names[variable_macro_index]
+    model.outcomes = [
+        ScalarOutcome(
+            f"macro_welfare_{agent_name}",
+            kind=ScalarOutcome.MAXIMIZE,
+        ),
+        ScalarOutcome(
+            "fraction_above_threshold",
+            kind=ScalarOutcome.MINIMIZE,
+        ),
+    ]
+
+    reference_scenario = Scenario(
+        "reference", ssp_rcp_scenario=reference_ssp_rcp_scenario_index
+    )
+
+    filename = f"SingleAgent_{variable_macro_index}_{nfe}_{seed}.tar.gz"
+    timestamp = datetime.datetime.now().strftime("%Y_%m")
+    random_number = random.randint(0, 10000)
+    directory_name = os.path.abspath(
+        os.path.join(
+            datapath,
+            f"single_agent_{variable_macro_index}_{timestamp}_{random_number}_ref"
+            f"{reference_ssp_rcp_scenario_index}_{seed}",
+        )
+    )
+    os.environ["BORG_RUNTIME_DIR"] = directory_name
+    os.makedirs(directory_name, exist_ok=True)
+
+    rank = _mpi_rank()
+    lever_names = [lever.name for lever in model.levers]
+    outcome_names = [outcome.name for outcome in model.outcomes]
+    if rank == 0:
+        convergence = [
+            ArchiveLogger(
+                directory_name,
+                lever_names,
+                outcome_names,
+                base_filename=filename,
+            ),
+            EpsilonProgress(),
+        ]
+    else:
+        convergence = []
+
+    set_ema_context(
+        model=model,
+        reference=reference_scenario,
+        evaluation=model_wrapper_momadps_single_agent,
+        reference_index=reference_ssp_rcp_scenario_index,
+    )
+
+    evaluator_map = {
+        Evaluator.MPIEvaluator: MPIEvaluator,
+        Evaluator.MultiprocessingEvaluator: MultiprocessingEvaluator,
+        Evaluator.SequentialEvaluator: SequentialEvaluator,
+    }
+    evaluator_cls = evaluator_map[evaluator]
+
+    with evaluator_cls(model) as eval_ctx:
+        results = eval_ctx.optimize(
+            searchover="levers",
+            nfe=nfe,
+            epsilons=epsilons,
+            reference=reference_scenario,
+            convergence=convergence,
+            population_size=population_size,
+            algorithm=algorithm_class,
+        )
+
+    if (
+        rank == 0
+        and optimizer == Optimizer.MMBorgMOEA
+        and os.path.isdir(directory_name)
+    ):
+        header = lever_names + outcome_names
+        islands = int(os.environ.get("BORG_ISLANDS", "2"))
+        _create_intermediate_archives(directory_name, filename, islands, header)
+
+    return results
+
+
+###############################################################################################################################
+
+
 def build_random_policy(model, seed=1234):
     """
     This is for testing purposes only: builds a random policy within the lever bounds.
@@ -800,22 +1073,42 @@ def setup_model_from_config(config_path, mapping_base_path="data/input"):
 
 ###############################################################################################################################
 
+
 if __name__ == "__main__":
     config_path = "analysis/momadps_config.json"
 
     ema_logging.log_to_stderr(ema_logging.INFO)
-
-    run_optimization_momadps(
-        config_path=config_path,
+    results = run_single_agent_momadps(
+        config_path="analysis/momadps_config.json",
+        reference_set_path="MOMA_reference_set.csv",
+        policy_index=26,  # Pareto-Nash solution index
+        variable_macro_index=0,  # 0=R5ASIA, 1=R5LAM, etc.
         nfe=50,
-        # swf=0,
-        seed=10,  # None for Borg. Any integer for reproducibility with other optimizers
+        population_size=2,
+        epsilons=[1e-3, 1e-3],
+        seed=10,
         datapath="./data",
-        optimizer=Optimizer.MSBorgMOEA,  # Optimizer.MMBorgMOEA, Optimizer.EpsNSGAII
-        population_size=2,  # default is 100. Test locally with 2
-        reference_ssp_rcp_scenario_index=2,  # NOTE #TODO Get this from config json
-        evaluator=Evaluator.SequentialEvaluator,
+        optimizer=Optimizer.MSBorgMOEA,
+        reference_ssp_rcp_scenario_index=2,
     )
+
+
+# if __name__ == "__main__":
+#     config_path = "analysis/momadps_config.json"
+
+#     ema_logging.log_to_stderr(ema_logging.INFO)
+
+#     run_optimization_momadps(
+#         config_path=config_path,
+#         nfe=50,
+#         # swf=0,
+#         seed=10,  # None for Borg. Any integer for reproducibility with other optimizers
+#         datapath="./data",
+#         optimizer=Optimizer.MSBorgMOEA,  # Optimizer.MMBorgMOEA, Optimizer.EpsNSGAII
+#         population_size=2,  # default is 100. Test locally with 2
+#         reference_ssp_rcp_scenario_index=2,  # NOTE #TODO Get this from config json
+#         evaluator=Evaluator.SequentialEvaluator,
+#     )
 
 
 # if __name__ == "__main__":
