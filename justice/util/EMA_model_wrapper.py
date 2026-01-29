@@ -54,7 +54,7 @@ def model_wrapper_emodps(**kwargs):
 
     rbf = RBF(
         n_rbfs=(n_inputs_rbf + 2), n_inputs=n_inputs_rbf, n_outputs=n_outputs_rbf
-    )  # n_inputs_rbf is a rule of thumb. Hasn't been verified yet for complex models
+    )  # n_inputs_rbf +2  is a rule of thumb.
 
     centers_shape, radii_shape, weights_shape = rbf.get_shape()
 
