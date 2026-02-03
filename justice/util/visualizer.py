@@ -4177,9 +4177,6 @@ def plot_stacked_area_chart_with_baseline_emissions(
                 # Concatenate the dataframes abaated_emissions and data but keep the similar region names together
                 data = pd.concat([data, abated_emissions])
 
-                # # Use string similarity to sort the regions
-                # data = data.reindex(sorted(data.index, key=lambda x: x.split("_")[0]))
-
                 # Shape of the data
 
             print("Region list: ", region_list)
@@ -4200,10 +4197,6 @@ def plot_stacked_area_chart_with_baseline_emissions(
                 color_discrete_sequence=colour_palette,
                 groupnorm=groupnorm,
                 category_orders={"variable": region_list},
-                # pattern_shape=data.index,
-                # Pattern Shape sequence for only the abated emissions
-                # pattern_shape_sequence=["x", None, "x", None, "x", None, "x", None, "x", None, "x", None, "x", None, "x", None, "x", None],
-                # pattern_shape_sequence=["x"],
             )
             if groupnorm is None:
                 fig.update_layout(yaxis_range=[yaxis_lower_limit, yaxis_upper_limit])

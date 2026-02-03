@@ -1443,7 +1443,6 @@ def compute_p90_regret_dataframe(
         raise ValueError(
             "No valid baseline data found in mapping for baseline_scenario and variable_of_interest."
         )
-
     # Sort list by median value
     median_list.sort(key=lambda x: x[1])
 
