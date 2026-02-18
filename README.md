@@ -2,6 +2,7 @@
 
 ![GitHub Actions build status](https://github.com/pollockDeVis/JUSTICE/actions/workflows/pytest.yml/badge.svg?event=push)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15145122.svg)](https://doi.org/10.5281/zenodo.15145122)
+
 <p align="center">
   <img title="JUSTICE Logo" alt="JUSTICE Logo" src="/docs/diagrams/JUSTICE LOGO.svg" width="400"/>
 </p>
@@ -12,7 +13,7 @@ JUSTICE is designed to explore the influence on distributive justice outcomes du
 
 ### JUSTICE Overview
 
-<img title="JUSTICE Framework" alt="Flowchart of JUSTICE" src="/docs/diagrams/JUSTICE Flowchart.jpeg">
+<img title="JUSTICE Framework" alt="Flowchart of JUSTICE" src="/docs/diagrams/JUSTICE Viz.pdf">
 
 ### Documentation
 
@@ -25,8 +26,8 @@ JUSTICE is developed by the [HIPPO Lab](https://www.tudelft.nl/ai/hippo-lab) at 
   <img src="docs/diagrams/tudelft_logo_dark.png" alt="TU Delft Logo" width="200" style="margin-left: 20px;"/>
 </p>
 
-
 ### Installation
+
 Create and activate a virtual environment and install as a package using
 
 ```
@@ -50,9 +51,11 @@ You can view the additional argument to modify the JUSTICE modules and the RL hy
 This script will save the checkpoints, pickled configs and multi-objective vectorised returns for trained policies for each weight combination in the base_save_path provided.
 
 #### Evaluation
+
 Once models have been trained for different weight combinations and the checkpoints for each of them are saved, you can run the evaluation for one specific weight combination and for one evaluation seed by running:
 
 ```bash
 python eval.py --checkpoint_path="Absolute path to the checkpoint for policy" --seed=0 --output_path="Directory where evaluation results are saved""
 ```
+
 The evaluation script will run the MOMARL policy in the JUSTICE simulation and save the evolution of various economic and climate metrics over time where the Emission Control Rate and Savings Rates are set by the trained policy in each time step.

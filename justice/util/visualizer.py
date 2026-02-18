@@ -5027,77 +5027,285 @@ def plot_regret_heatmap(
     return ax
 
 
-# def plot_hypervolume(
-#     path_to_data="data/convergence_metrics",
-#     path_to_output="./data/plots/convergence_plots",
-#     input_data=[],  # Provide the list of input data files with extension
-#     xaxis_title="Number of Function Evaluations",
-#     yaxis_title="Hypervolume",
-#     linewidth=3,
-#     colour_palette=px.colors.qualitative.Dark24,
-#     template="plotly_white",
-#     yaxis_upper_limit=0.7,
-#     title_x=0.5,
-#     width=1000,
-#     height=800,
-#     fontsize=15,
-#     saving=False,
-# ):
-#     # Assert if input_data list is empty
-#     assert input_data, "No input data provided for visualization."
+def plot_regional_emissions_comparison_with_boxplots(
+    data_paths,  # List of paths for the data
+    start_year,
+    end_year,
+    data_timestep,
+    timestep,
+    visualization_start_year,
+    visualization_end_year,
+    yaxis_range,
+    opacity,
+    plot_title,
+    xaxis_title,
+    yaxis_title,
+    template,
+    width,
+    height,
+    baseline_path=None,
+    colors=[
+        "rgba(252, 141, 98, 0.8)",
+        "rgba(93, 105, 177, 0.8)",
+        "rgba(218, 165, 27, 0.8)",
+        "rgba(47, 138, 196, 0.8)",
+        "rgba(153, 201, 69, 0.8)",
+    ],
+    median_colors=[
+        "rgba(252, 141, 98, 1)",
+        "rgba(93, 105, 177, 1)",
+        "rgba(218, 165, 27, 1)",
+        "rgba(47, 138, 196, 1)",
+        "rgba(153, 201, 69, 1)",
+    ],
+    baseline_color="gray",
+    fontsize=18,
+    column_widths=[0.8, 0.2],
+    output_path=None,
+    saving=False,
+    show_min_max=True,
+    region_dict=None,  # NEW
+    region_name=None,  # NEW
+    region_aggregation=False,  # NEW
+    output_filename=None,
+):
 
-#     # Loop through the input data list and load the data
-#     for idx, file in enumerate(input_data):
-#         data = pd.read_csv(path_to_data + "/" + file)
-#         # Keep only nfe and hypervolume columns
-#         data = data[["nfe", "hypervolume"]]
-#         data = data.sort_values(by="nfe")
+    # Set the time horizon
+    time_horizon = TimeHorizon(
+        start_year=start_year,
+        end_year=end_year,
+        data_timestep=data_timestep,
+        timestep=timestep,
+    )
+    list_of_years = time_horizon.model_time_horizon
 
-#         # Find the max nfe value
-#         nfe_max = data["nfe"].max()
-#         # Get title text from filename
-#         titletext = file.split("_")[0]
-#         # Convert the titletext from all uppercase to title case
-#         titletext = titletext.title()
+    data_loader = DataLoader()
 
-#         fig = go.Figure(
-#             data=[
-#                 go.Scatter(
-#                     x=data["nfe"],
-#                     y=data["hypervolume"],
-#                     fill="none",
-#                     mode="lines",  #'none',
-#                     line=dict(color=colour_palette[idx], width=linewidth),
-#                     showlegend=False,
-#                 )
-#             ]
-#         )
+    # ---------------------------
+    # Baseline (regional optional)
+    # ---------------------------
+    if baseline_path:
+        baseline = np.load(baseline_path)
 
-#         # Set the chart title and axis labels
-#         fig.update_layout(
-#             title=dict(text=titletext),
-#             xaxis_title=xaxis_title,
-#             yaxis_title=yaxis_title,
-#             width=width,
-#             height=height,
-#             template=template,
-#             yaxis_range=[0, yaxis_upper_limit],
-#             title_x=title_x,
-#             font=dict(size=fontsize),
-#         )
+        if region_aggregation:
+            assert (
+                region_dict is not None
+            ), "region_dict required if region_aggregation=True"
+            region_list, baseline = justice_region_aggregator(
+                data_loader=data_loader, region_config=region_dict, data=baseline
+            )
+            # baseline shape: (regions, years, ensemble) or (regions, years)
+            if baseline.ndim == 3:
+                baseline = baseline.mean(axis=2)
 
-#         # Avoid zero tick in the y-axis - minor cosmetic change
-#         fig.update_yaxes(tickvals=(np.arange(0, yaxis_upper_limit, 0.1))[1:])
+            # select one region
+            if region_name is not None:
+                r_idx = region_list.index(region_name)
+                baseline = baseline[r_idx]
 
-#         # Save the figure
-#         if not os.path.exists(path_to_output):
-#             os.makedirs(path_to_output)
+        # --- make sure baseline is 2D (years x ensemble) ---
+        baseline = np.asarray(baseline)
+        if baseline.ndim == 1:
+            baseline = baseline[:, None]  # (years, 1)
+        elif baseline.shape[0] != len(list_of_years) and baseline.shape[1] == len(
+            list_of_years
+        ):
+            baseline = baseline.T
 
-#         if saving:
-#             output_file_name = f"{titletext}_{nfe_max}_hypervolume_plot"
-#             fig.write_image(path_to_output + "/" + output_file_name + ".png")
+        # same as before
+        baseline = pd.DataFrame(baseline.T, columns=list_of_years)
+        baseline = baseline.loc[:, visualization_start_year:visualization_end_year]
+        baseline = baseline.T
+        baseline = baseline.mean(axis=1)
 
-#     return fig
+    # ---------------------------
+    # Load the data and create dataframes
+    # ---------------------------
+    data_frames = []
+    for path in data_paths:
+        filetype = os.path.splitext(path)[1]
+        if filetype == ".npy":
+            data = np.load(path)
+        elif filetype == ".pkl":
+            with open(path, "rb") as f:
+                data = pickle.load(f)
+        elif filetype == ".csv":
+            data = pd.read_csv(path)
+
+        if region_aggregation:
+            assert (
+                region_dict is not None
+            ), "region_dict required if region_aggregation=True"
+            region_list, data = justice_region_aggregator(
+                data_loader=data_loader, region_config=region_dict, data=data
+            )
+
+            # data shape: (regions, years, ensemble)
+            if region_name is not None:
+                r_idx = region_list.index(region_name)
+                data = data[r_idx]
+
+        # original behaviour
+        if len(data.shape) == 3:
+            data = np.sum(data, axis=0)
+
+        data = data.T
+        df = pd.DataFrame(data, columns=list_of_years).loc[
+            :, visualization_start_year:visualization_end_year
+        ]
+        data_frames.append(df.T)
+
+    # ---- rest of your code unchanged ----
+    fig = make_subplots(
+        rows=1, cols=2, column_widths=column_widths, subplot_titles=[plot_title, " "]
+    )
+
+    for idx, emissions in enumerate(data_frames):
+        color = colors[idx]
+        median_color = median_colors[idx]
+
+        max_percentile = np.percentile(emissions, 100, axis=1)
+        min_percentile = np.percentile(emissions, 0, axis=1)
+        p75 = np.percentile(emissions, 75, axis=1)
+        p25 = np.percentile(emissions, 25, axis=1)
+
+        if show_min_max:
+            fig.add_trace(
+                go.Scatter(
+                    x=emissions.index,
+                    y=max_percentile,
+                    mode="lines",
+                    line=dict(color=color, width=0.5),
+                    fill=None,
+                    showlegend=False,
+                ),
+                row=1,
+                col=1,
+            )
+
+            fig.add_trace(
+                go.Scatter(
+                    x=emissions.index,
+                    y=min_percentile,
+                    mode="lines",
+                    line=dict(color=color, width=0.5),
+                    fill="tonexty",
+                    opacity=opacity * 0.01,
+                    showlegend=False,
+                ),
+                row=1,
+                col=1,
+            )
+
+        fig.add_trace(
+            go.Scatter(
+                x=emissions.index,
+                y=p75,
+                mode="lines",
+                line=dict(color=color, width=0.5),
+                fill=None,
+                showlegend=False,
+            ),
+            row=1,
+            col=1,
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=emissions.index,
+                y=p25,
+                mode="lines",
+                line=dict(color=color, width=0.5),
+                fill="tonexty",
+                opacity=opacity,
+                showlegend=False,
+            ),
+            row=1,
+            col=1,
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=emissions.index,
+                y=emissions.median(axis=1),
+                mode="lines",
+                line=dict(color=median_color, width=2),
+                name=f"Median {idx+1}",
+            ),
+            row=1,
+            col=1,
+        )
+
+        last_year_data = emissions.iloc[-1]
+        filename = data_paths[idx].split("/")[-1].split(".")[0]
+        filename = filename.split("_")[0]
+        fig.add_trace(
+            go.Box(
+                y=last_year_data,
+                name=filename,
+                marker=dict(color=median_color),
+                width=0.1,
+            ),
+            row=1,
+            col=2,
+        )
+
+    if baseline_path:
+        fig.add_trace(
+            go.Scatter(
+                x=emissions.index,
+                y=baseline,
+                mode="lines",
+                line=dict(color=baseline_color, width=2, dash="dash"),
+                name="Baseline",
+            ),
+            row=1,
+            col=1,
+        )
+
+    fig.update_traces(
+        marker=dict(line=dict(width=0.3, color=baseline_color)), row=1, col=2
+    )
+
+    fig.update_layout(
+        title=plot_title,
+        xaxis_title=xaxis_title,
+        yaxis_title=yaxis_title,
+        template=template,
+        height=height,
+        width=width,
+    )
+
+    fig.update_yaxes(
+        title_text=yaxis_title, range=yaxis_range, showgrid=False, row=1, col=1
+    )
+    fig.update_yaxes(
+        range=yaxis_range, showticklabels=False, showgrid=False, row=1, col=2
+    )
+    fig.update_xaxes(title_text=xaxis_title, showgrid=False, row=1, col=1)
+    fig.update_layout(font=dict(size=fontsize))
+    fig.update_layout(xaxis=dict(domain=[0, 0.8]), xaxis2=dict(domain=[0.95, 1]))
+
+    fig.update_xaxes(
+        showline=True, linewidth=1, linecolor="black", ticks="outside", row=1, col=1
+    )
+    fig.update_yaxes(
+        showline=True, linewidth=1, linecolor="black", ticks="outside", row=1, col=1
+    )
+
+    if saving:
+        if output_filename is None:
+            filename = "_".join(
+                [os.path.splitext(os.path.basename(path))[0] for path in data_paths]
+            )
+            fig.write_image(f"{output_path}/{filename}.svg")
+        else:
+            filename = "_".join(
+                [os.path.splitext(os.path.basename(path))[0] for path in data_paths]
+            )
+            fig.write_image(f"{output_path}/{filename}_{output_filename}.svg")
+
+    return fig
 
 
 if __name__ == "__main__":
