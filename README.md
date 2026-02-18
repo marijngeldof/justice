@@ -13,7 +13,9 @@ JUSTICE is designed to explore the influence on distributive justice outcomes du
 
 ### JUSTICE Overview
 
-<img title="JUSTICE Framework" alt="Flowchart of JUSTICE" src="/docs/diagrams/JUSTICE Viz.pdf">
+<p align="center">
+  <img title="JUSTICE Framework" alt="JUSTICE Framework" src="/docs/diagrams/JUSTICE Viz.svg" width="400"/>
+</p>
 
 ### Documentation
 
