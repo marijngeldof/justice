@@ -30,6 +30,12 @@ from typing import Iterable
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Polygon
 import matplotlib.colors as mcolors
+import matplotlib.cm as cm
+from matplotlib.colors import LinearSegmentedColormap
+
+import plotly.colors as pc
+from matplotlib.patches import PathPatch
+import matplotlib.path as mpath
 
 # =============================================================================
 
@@ -5349,3 +5355,598 @@ if __name__ == "__main__":
         show_colorbar=True,
         show_title=False,
     )
+
+
+def visualize_tradeoffs_colored(
+    input_data=[],
+    figsize=(15, 10),
+    set_style="whitegrid",
+    font_scale=1.8,
+    colourmap="bright",
+    linewidth=0.4,
+    alpha=0.1,
+    path_to_data="data/reevaluation/",
+    path_to_output="./data/plots/only_welfare_temp",
+    scaling=True,
+    feature_range=(0, 1),
+    column_labels=None,
+    legend_labels=None,
+    show_legend=False,
+    axis_rotation=30,
+    fontsize=12,
+    list_of_objectives=[
+        "welfare_utilitarian",
+        "years_above_temperature_threshold",
+        "damage_cost_per_capita_utilitarian",
+        "abatement_cost_per_capita_utilitarian",
+    ],
+    direction_of_optimization=[
+        "min",
+        "min",
+        "max",
+        "max",
+    ],
+    pretty_labels=[
+        "Welfare",
+        "Years Above Temp Threshold",
+        "Welfare Loss Damage",
+        "Welfare Loss Abatement",
+    ],
+    default_colors=["red", "blue"],
+    top_percentage=0.1,
+    objective_of_interest="fraction_above_threshold",
+    show_best_solutions=False,
+    highlight_indices=None,
+    highlight_factor=3,
+    saving=False,
+    custom_colors=["#d62728", "#ff7f0e", "#a8d2e8", "#05417d"],
+):
+
+    sns.set_theme(font_scale=font_scale)
+    sns.set_style(set_style)
+    sns.set_theme(rc={"figure.figsize": figsize})
+
+    # Assertions
+    assert input_data, "Input data not provided"
+    assert path_to_data, "Path to reference set is not provided"
+    assert len(list_of_objectives) == len(direction_of_optimization)
+
+    concatenated_df = pd.DataFrame()
+
+    for file in input_data:
+        data = pd.read_csv(path_to_data + "/" + file)
+        data = data[list_of_objectives]
+        data = np.abs(data)
+        data["type"] = file
+        concatenated_df = pd.concat([concatenated_df, data], axis=0)
+
+    concatenated_df.reset_index(drop=True, inplace=True)
+
+    if scaling:
+        scaler = MinMaxScaler(feature_range=feature_range)
+        concatenated_df[list_of_objectives] = scaler.fit_transform(
+            concatenated_df[list_of_objectives]
+        )
+
+        for i, direction in enumerate(direction_of_optimization):
+            if direction == "min":
+                concatenated_df[list_of_objectives[i]] = (
+                    1 - concatenated_df[list_of_objectives[i]]
+                )
+
+    # --- Custom colormap (red → orange → light blue → blue) ---
+    cmap = LinearSegmentedColormap.from_list("temp_scale", custom_colors)
+    norm = mcolors.Normalize(
+        vmin=concatenated_df[objective_of_interest].min(),
+        vmax=concatenated_df[objective_of_interest].max(),
+    )
+
+    limits = parcoords.get_limits(concatenated_df[list_of_objectives])
+    limits.columns = pretty_labels
+    axes = parcoords.ParallelAxes(limits, rot=axis_rotation, fontsize=fontsize)
+
+    # Adjust highlight indices if needed
+    top_indices = {}
+    if show_best_solutions and highlight_indices:
+        top_indices = highlight_indices.copy()
+        size_offset = 0
+        for file in input_data:
+            if file in top_indices:
+                top_indices[file] = [i + size_offset for i in top_indices[file]]
+            size_offset += concatenated_df[concatenated_df["type"] == file].shape[0]
+
+    for idx, row in concatenated_df.iterrows():
+        file_color = cmap(norm(row[objective_of_interest]))
+        lw = linewidth
+        alpha_here = alpha
+
+        if show_best_solutions and highlight_indices:
+            for _type, indices in top_indices.items():
+                if idx in indices:
+                    lw = linewidth * highlight_factor
+                    alpha_here = 1.0
+                    break
+
+        _sliced_data = pd.DataFrame(row[list_of_objectives].values).T
+        _sliced_data.columns = pretty_labels
+
+        axes.plot(
+            _sliced_data,
+            color=file_color,
+            linewidth=lw,
+            alpha=alpha_here,
+        )
+
+    if saving:
+        output_file_name = (
+            "tradeoffs_"
+            + "_".join([file.split("_")[0] for file in input_data])
+            + "_"
+            + ".svg"
+        )
+        if not os.path.exists(path_to_output):
+            os.makedirs(path_to_output)
+        plt.savefig(path_to_output + "/" + output_file_name, dpi=300)
+
+    plt.show()
+    return concatenated_df
+
+
+def _interp_hex_colors(colors, t):
+    """
+    Interpolate along a list of HEX colors at position t in [0, 1].
+    Returns a Plotly-compatible 'rgb(r,g,b)' string.
+    """
+    t = float(np.clip(t, 0.0, 1.0))
+    n = len(colors)
+    if n == 1:
+        r, g, b = pc.hex_to_rgb(colors[0])
+        return f"rgb({r},{g},{b})"
+
+    pos = t * (n - 1)
+    i = int(np.floor(pos))
+    j = min(i + 1, n - 1)
+    w = pos - i
+
+    c0 = np.array(pc.hex_to_rgb(colors[i]), dtype=float)
+    c1 = np.array(pc.hex_to_rgb(colors[j]), dtype=float)
+    c = (1.0 - w) * c0 + w * c1
+    r, g, b = np.round(c).astype(int)
+    return f"rgb({r},{g},{b})"
+
+
+
+
+
+def plot_alluvial_plotly(
+    df,
+    objectives,
+    direction_of_optimization,
+    temperature_col="fraction_above_threshold",
+    bins=5,  # int or dict like {"welfare_3": 3, "welfare_4": 3}
+    custom_colors=("#d62728", "#ff7f0e", "#9ecae1", "#08519c"),
+    title="Alluvial Trade‑offs (binned)",
+    bin_order="desc",  # "desc": 0.8-1.0 at top (encouraged), "asc": 0.0-0.2 at top
+    drop_unused_bins=True,  # removes empty middle bins per objective (recommended)
+):
+    """
+    Plot an alluvial/Sankey of binned objectives (Plotly).
+
+    - Scales objectives to [0,1] and inverts those with direction "min" so 1=best.
+    - Bins each objective into uniform bins. `bins` can be:
+        * int: same number of bins for all objectives
+        * dict: per-objective bins, e.g. {"welfare_3": 3, "welfare_4": 3}
+    - Colors links by mean scaled temp score of policies in that flow.
+    """
+
+    df = df.copy()
+
+    # Ensure objectives and temperature are numeric BEFORE scaling
+    cols_to_numeric = list(dict.fromkeys(objectives + [temperature_col]))
+    for c in cols_to_numeric:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df = df.dropna(subset=cols_to_numeric)
+    if df.empty:
+        raise ValueError(
+            "After coercing to numeric and dropping NaNs, the dataframe is empty."
+        )
+
+    # ---- scale objectives to 0..1 ----
+    scaler = MinMaxScaler()
+    df_scaled = df.copy()
+    df_scaled[objectives] = scaler.fit_transform(df_scaled[objectives])
+
+    # invert "min" objectives so that 1=best, 0=worst
+    for obj, direction in zip(objectives, direction_of_optimization):
+        if direction == "min":
+            df_scaled[obj] = 1.0 - df_scaled[obj]
+
+    # numeric temperature score for coloring
+    if temperature_col in objectives:
+        temp_score = df_scaled[temperature_col].astype(float).values
+    else:
+        tmp = df_scaled[[temperature_col]].copy()
+        tmp[temperature_col] = MinMaxScaler().fit_transform(tmp[[temperature_col]])
+        temp_score = tmp[temperature_col].astype(float).values
+    df_scaled["_temp_score"] = temp_score
+
+    if bin_order not in ("asc", "desc"):
+        raise ValueError("bin_order must be 'asc' or 'desc'")
+
+    # Helper to get bin count per objective
+    def _bins_for(obj):
+        if isinstance(bins, dict):
+            return int(bins.get(obj, 5))
+        return int(bins)
+
+    # ---- bin each objective into categories (possibly with different bin counts) ----
+    for obj in objectives:
+        k = _bins_for(obj)
+        edges = np.linspace(0.0, 1.0, k + 1)
+        labels = [f"{edges[i]:.1f}-{edges[i+1]:.1f}" for i in range(k)]
+
+        df_scaled[obj] = pd.cut(
+            df_scaled[obj],
+            bins=edges,
+            labels=labels,
+            include_lowest=True,
+        )
+
+        ordered_labels = labels if bin_order == "asc" else list(reversed(labels))
+        df_scaled[obj] = df_scaled[obj].cat.reorder_categories(
+            ordered_labels, ordered=True
+        )
+
+        if drop_unused_bins:
+            df_scaled[obj] = df_scaled[obj].cat.remove_unused_categories()
+
+    df_scaled = df_scaled.dropna(subset=objectives + ["_temp_score"])
+    if df_scaled.empty:
+        raise ValueError("After binning, the dataframe is empty (check scaling/bins).")
+
+    # ---- build nodes (use categories ACTUALLY PRESENT, in their ordered order) ----
+    node_labels = []
+    node_index = {}
+    for obj in objectives:
+        for lab in list(df_scaled[obj].cat.categories):
+            node_index[(obj, lab)] = len(node_labels)
+            node_labels.append(f"{obj}\n{lab}")
+
+    # ---- build links (aggregate counts + mean temp_score) ----
+    source, target, value, link_colors = [], [], [], []
+
+    for i in range(len(objectives) - 1):
+        left = objectives[i]
+        right = objectives[i + 1]
+
+        grouped = (
+            df_scaled.groupby([left, right], observed=True)["_temp_score"]
+            .agg(count="size", mean="mean")
+            .reset_index()
+        )
+
+        for _, row in grouped.iterrows():
+            s = node_index[(left, row[left])]
+            t = node_index[(right, row[right])]
+            source.append(s)
+            target.append(t)
+            value.append(int(row["count"]))
+
+            mean_val = float(np.clip(row["mean"], 0.0, 1.0))
+            link_colors.append(_interp_hex_colors(list(custom_colors), mean_val))
+
+    fig = go.Figure(
+        data=[
+            go.Sankey(
+                arrangement="perpendicular",  # keep auto layout (less jumbled) #snap
+                node=dict(
+                    pad=15,
+                    thickness=15,
+                    label=None,  # node_labels,
+                    color="lightgray",
+                ),
+                link=dict(
+                    source=source,
+                    target=target,
+                    value=value,
+                    color=link_colors,
+                ),
+            )
+        ]
+    )
+
+    fig.update_layout(title=title, font_size=10)
+    return fig
+
+
+def scale_and_orient_objectives(
+    df: pd.DataFrame,
+    objectives,
+    direction_of_optimization,
+    feature_range=(0, 1),
+    take_abs=True,
+):
+    assert len(objectives) == len(direction_of_optimization)
+
+    out = df.copy()
+
+    missing = [c for c in objectives if c not in out.columns]
+    if missing:
+        raise KeyError(f"Missing objective columns in df: {missing}")
+
+    for c in objectives:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+
+    out = out.dropna(subset=objectives)
+    if out.empty:
+        raise ValueError(
+            "No rows left after converting objectives to numeric and dropping NaNs."
+        )
+
+    if take_abs:
+        out[objectives] = out[objectives].abs()
+
+    scaler = MinMaxScaler(feature_range=feature_range)
+    out[objectives] = scaler.fit_transform(out[objectives])
+
+    for obj, direction in zip(objectives, direction_of_optimization):
+        if direction == "min":
+            out[obj] = 1.0 - out[obj]
+
+    return out
+
+
+
+
+def curved_parallel_coordinates_clustered(
+    df: pd.DataFrame,
+    objectives,
+    direction_of_optimization,
+    color_by,
+    columns_to_plot=None,  # if None -> plot objectives; you can hide temperature axis here
+    labels=None,
+    bins=3,  # int OR dict, e.g. {"welfare_3": 2, "welfare_4": 2, "default": 3}
+    jitter=0.0,  # small jitter around bin centers (e.g. 0.01–0.03) or 0.0
+    feature_range=(0, 1),
+    take_abs=False,
+    figsize=(12, 8),
+    alpha=0.25,
+    linewidth=1.0,
+    curvature=0.35,
+    highlight_indices=None,  # ORIGINAL row indices from your CSV (e.g. [9,52,86])
+    highlight_factor=3.5,
+    highlight_alpha=1.0,
+    custom_colors=("#d62728", "#ff7f0e", "#9ecae1", "#08519c"),
+    x_rotation=25,
+    title=None,
+    random_state=0,
+):
+    """
+    Same as before, but `bins` can now be:
+      - int: same bins for all plotted axes
+      - dict: per-axis bins with optional default, e.g.
+          bins={"welfare_0": 4, "welfare_3": 2, "welfare_4": 2, "default": 3}
+
+    Each axis is binned on [0,1] into uniform-width bins, values snapped to bin centers.
+    """
+
+    if columns_to_plot is None:
+        columns_to_plot = list(objectives)
+
+    if labels is None:
+        labels = list(columns_to_plot)
+
+    if len(labels) != len(columns_to_plot):
+        raise ValueError("labels must have the same length as columns_to_plot")
+
+    if len(objectives) != len(direction_of_optimization):
+        raise ValueError(
+            "objectives and direction_of_optimization must have the same length"
+        )
+
+    def _bins_for(colname: str) -> int:
+        if isinstance(bins, dict):
+            b = bins.get(colname, bins.get("default", 3))
+            return int(b)
+        return int(bins)
+
+    df0 = df.copy()
+    df0["_orig_index"] = df0.index  # preserve original row index for highlighting
+
+    # Ensure numeric for required cols
+    required_cols = list(dict.fromkeys(list(objectives) + [color_by]))
+    for c in required_cols:
+        if c not in df0.columns:
+            raise KeyError(f"Missing column in df: {c}")
+        df0[c] = pd.to_numeric(df0[c], errors="coerce")
+
+    # Drop rows with NaNs in required cols
+    df0 = df0.dropna(subset=required_cols)
+    if df0.empty:
+        raise ValueError("No rows left after numeric coercion and dropping NaNs.")
+
+    # Optional abs
+    if take_abs:
+        df0[objectives] = df0[objectives].abs()
+
+    # Scale objectives to feature_range
+    scaler = MinMaxScaler(feature_range=feature_range)
+    df_scaled = df0.copy()
+    df_scaled[objectives] = scaler.fit_transform(df_scaled[objectives])
+
+    # Invert "min" objectives so 1=best
+    for obj, direction in zip(objectives, direction_of_optimization):
+        if direction == "min":
+            df_scaled[obj] = 1.0 - df_scaled[obj]
+
+    # Ensure color_by is in [0,1] if it's not among objectives
+    if color_by not in objectives:
+        tmp_scaler = MinMaxScaler(feature_range=feature_range)
+        df_scaled[color_by] = tmp_scaler.fit_transform(df_scaled[[color_by]])
+
+    # -----------------------
+    # Cluster/bin axes to plot (PER AXIS)
+    # -----------------------
+    rng = np.random.default_rng(random_state)
+    df_clustered = df_scaled.copy()
+    clustered_cols = []
+
+    for col in columns_to_plot:
+        if col not in df_clustered.columns:
+            raise KeyError(f"columns_to_plot contains '{col}' which is not in df")
+
+        b = _bins_for(col)
+        if b < 2:
+            raise ValueError(f"bins for '{col}' must be >= 2 (got {b}).")
+
+        edges = np.linspace(0.0, 1.0, b + 1)
+        centers = (edges[:-1] + edges[1:]) / 2.0
+
+        vals = df_clustered[col].to_numpy(dtype=float)
+        vals = np.clip(vals, 0.0, 1.0)
+
+        idx = np.digitize(vals, edges, right=False) - 1
+        idx = np.clip(idx, 0, len(centers) - 1)
+        snapped = centers[idx]
+
+        if jitter and jitter > 0:
+            snapped = snapped + rng.uniform(-jitter, jitter, size=snapped.shape)
+            snapped = np.clip(snapped, 0.0, 1.0)
+
+        new_col = f"{col}__clustered_{b}bins"
+        df_clustered[new_col] = snapped
+        clustered_cols.append(new_col)
+
+    # -----------------------
+    # Plot curved coordinates
+    # -----------------------
+    data = df_clustered[clustered_cols].to_numpy(dtype=float)
+    x = np.arange(len(clustered_cols), dtype=float)
+
+    cmap = LinearSegmentedColormap.from_list("temp_scale", list(custom_colors))
+    norm = mcolors.Normalize(
+        vmin=float(df_clustered[color_by].min()),
+        vmax=float(df_clustered[color_by].max()),
+    )
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # vertical axes
+    for xi in x:
+        ax.vlines(xi, 0, 1, color="black", linewidth=0.8, alpha=0.35)
+
+    highlight_set = set(highlight_indices or [])
+
+    for row_i in range(len(df_clustered)):
+        y = data[row_i, :]
+
+        verts = [(x[0], y[0])]
+        codes = [mpath.Path.MOVETO]
+
+        for k in range(len(clustered_cols) - 1):
+            x0, y0 = x[k], y[k]
+            x1, y1 = x[k + 1], y[k + 1]
+            dx = x1 - x0
+
+            c1 = (x0 + curvature * dx, y0)
+            c2 = (x1 - curvature * dx, y1)
+
+            verts.extend([c1, c2, (x1, y1)])
+            codes.extend([mpath.Path.CURVE4, mpath.Path.CURVE4, mpath.Path.CURVE4])
+
+        path = mpath.Path(verts, codes)
+
+        base_color = cmap(norm(float(df_clustered.iloc[row_i][color_by])))
+
+        orig_idx = int(df_clustered.iloc[row_i]["_orig_index"])
+        is_hi = orig_idx in highlight_set
+
+        lw = linewidth * (highlight_factor if is_hi else 1.0)
+        a = highlight_alpha if is_hi else alpha
+
+        patch = PathPatch(
+            path,
+            facecolor="none",
+            edgecolor=base_color,
+            lw=lw,
+            alpha=a,
+            capstyle="round",
+            joinstyle="round",
+        )
+        ax.add_patch(patch)
+
+    ax.set_xlim(x[0] - 0.3, x[-1] + 0.3)
+    ax.set_ylim(0, 1)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=x_rotation, ha="right")
+    ax.set_ylabel("Clustered (binned) value in [0,1]  (after inversion for 'min')")
+
+    if title:
+        ax.set_title(title)
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    plt.show()
+
+    return df_scaled, df_clustered, fig, ax
+
+
+
+
+
+def plot_colorbar_standalone(
+    df: pd.DataFrame,
+    color_by: str,
+    custom_colors=("#d62728", "#ff7f0e", "#9ecae1", "#08519c"),
+    figsize=(1.5, 5),
+    label=None,
+    orientation="vertical",
+    title=None,
+):
+    """
+    Plots a standalone colorbar matching the one used in
+    curved_parallel_coordinates_clustered().
+
+    Parameters
+    ----------
+    df        : The SAME df you pass to curved_parallel_coordinates_clustered
+                (before any internal scaling — i.e. your original df).
+    color_by  : Same value as used in the main plot.
+    custom_colors : Same tuple as used in the main plot.
+    figsize   : Figure size for the colorbar figure.
+    label     : Colorbar label. Defaults to the column name.
+    orientation : "vertical" or "horizontal".
+    title     : Optional figure title.
+    """
+    # --- Replicate exactly what the main function does ---
+    series = pd.to_numeric(df[color_by], errors="coerce").dropna()
+
+    cmap = LinearSegmentedColormap.from_list("temp_scale", list(custom_colors))
+    norm = mcolors.Normalize(vmin=float(series.min()), vmax=float(series.max()))
+
+    # --- Standalone figure with a single colorbar ---
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.set_visible(False)                         # hide the axes entirely
+
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])                              # required by matplotlib
+
+    cbar = fig.colorbar(
+        sm,
+        ax=ax,
+        orientation=orientation,
+        fraction=1.0,           # fill the whole figure
+        pad=0.0,
+    )
+    cbar.set_label(label if label is not None else color_by, fontsize=12)
+
+    if title:
+        fig.suptitle(title, fontsize=13)
+
+    plt.tight_layout()
+    plt.show()
+
+    return fig, cbar
