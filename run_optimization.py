@@ -65,6 +65,8 @@ from platypus import Solution
 SMALL_NUMBER = 1e-9
 warnings.filterwarnings("ignore")
 
+_dir = os.path.dirname(os.path.abspath(__file__))
+
 
 def _mpi_rank() -> int:
     """Determine MPI/Slurm rank if present, else 0."""
@@ -86,7 +88,8 @@ class MSBorgMOEA(BorgMOEA):
             problem,
             epsilons,
             population_size=population_size,
-            borg_library_path="./libborgms.so",  # NOTE: For mac, use "./libborg.dylib", for linux use "./libborgms.so"
+            # borg_library_path="./libborgms.so",  # NOTE: For mac, use "./libborg.dylib", for linux use "./libborgms.so"
+            borg_library_path=os.path.join(_dir, "solvers", "moea", "libborgms.so"),
             solve_settings={},
             seed=None,  # keep Borg's internal RNG
             direct_evaluation=True,  # use the evaluation function registered in context
@@ -152,7 +155,8 @@ class MMBorgMOEA(BorgMOEA):
             problem,
             epsilons,
             population_size=population_size,
-            borg_library_path="./libborgmm.so",
+            # borg_library_path="./libborgmm.so",
+            borg_library_path=os.path.join(_dir, "solvers", "moea", "libborgmm.so"),
             solve_settings={"islands": islands},
             seed=None,
             direct_evaluation=True,
