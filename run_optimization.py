@@ -646,11 +646,10 @@ def run_optimization_momadps(
 
 
 ###############################################################################################################################
-
-
 def run_single_agent_momadps(
     config_path: str,
-    reference_set_path: str,
+    nash_profiles_path: str,
+    policy_bank_path: str,
     policy_index: int,
     variable_macro_index: int,
     nfe: Optional[int] = None,
@@ -669,24 +668,32 @@ def run_single_agent_momadps(
     """
     Re-run an adaptive MOMADPS optimization where only one macro agent is allowed to
     adjust its RBF parameters, while the other four remain fixed at a known Pareto-Nash
-    solution (from `reference_set_path`, row `policy_index`).
+    solution.
+
+    The fixed parameters for each agent are looked up independently:
+      - `nash_profiles_path` (pareto_nash_profiles.csv): row `policy_index` gives
+        per-agent action indices a0..a4.
+      - `policy_bank_path` (COMBINED_MOMA_epsilon_nondominated_set.csv): each agent i
+        reads its RBF parameters from row a_i, which may differ across agents.
 
     The objectives:
         * Maximize the selected agent's welfare (macro-specific).
         * Minimize the fraction of ensemble runs above the temperature threshold.
-
-    Other infrastructure mirrors the multi-agent analyzer logic.
     """
 
     with open(config_path, "r", encoding="utf-8") as file:
         config = json.load(file)
 
-    reference_df = pd.read_csv(reference_set_path)
-    if policy_index < -len(reference_df) or policy_index >= len(reference_df):
+    # --- Load Nash profile row to get per-agent action indices ---
+    nash_df = pd.read_csv(nash_profiles_path)
+    if policy_index < -len(nash_df) or policy_index >= len(nash_df):
         raise IndexError(
-            f"policy_index={policy_index} is out of bounds for CSV with {len(reference_df)} rows."
+            f"policy_index={policy_index} is out of bounds for CSV with {len(nash_df)} rows."
         )
-    policy_row = reference_df.iloc[int(policy_index)]
+    nash_row = nash_df.iloc[int(policy_index)]
+
+    # --- Load the policy bank (5-row CSV) ---
+    policy_bank_df = pd.read_csv(policy_bank_path)
 
     start_year = config["start_year"]
     end_year = config["end_year"]
@@ -736,6 +743,9 @@ def run_single_agent_momadps(
             f"variable_macro_index={variable_macro_index} invalid; must be in [0, {n_macro_regions-1}]"
         )
 
+    # --- Extract per-agent action indices from the Nash profile row ---
+    actions = [int(nash_row[f"a{i}"]) for i in range(n_macro_regions)]
+
     model = Model("JUSTICE", function=model_wrapper_momadps_single_agent)
 
     rbf_probe = RBF(
@@ -754,12 +764,14 @@ def run_single_agent_momadps(
     fixed_radii = np.zeros((n_macro_regions, radii_len), dtype=float)
     fixed_weights = np.zeros((n_macro_regions, weights_len), dtype=float)
 
+    # --- Each agent reads from its own row in the policy bank ---
     for macro_idx in range(n_macro_regions):
+        action_row = policy_bank_df.iloc[actions[macro_idx]]
         for i in range(centers_len):
-            fixed_centers[macro_idx, i] = policy_row[f"center {macro_idx} {i}"]
-            fixed_radii[macro_idx, i] = policy_row[f"radii {macro_idx} {i}"]
+            fixed_centers[macro_idx, i] = action_row[f"center {macro_idx} {i}"]
+            fixed_radii[macro_idx, i] = action_row[f"radii {macro_idx} {i}"]
         for i in range(weights_len):
-            fixed_weights[macro_idx, i] = policy_row[f"weights {macro_idx} {i}"]
+            fixed_weights[macro_idx, i] = action_row[f"weights {macro_idx} {i}"]
 
     model.constants = [
         Constant("n_regions", n_regions),
@@ -775,7 +787,7 @@ def run_single_agent_momadps(
         Constant("stochastic_run", stochastic_run),
         Constant("climate_ensemble_members", climate_members),
         Constant("region_to_macro", region_to_macro.tolist()),
-        Constant("macro_region_names", list(macro_region_names)),  # <— add this
+        Constant("macro_region_names", list(macro_region_names)),
         Constant("n_macro_regions", n_macro_regions),
         Constant("min_temperature", min_temperature),
         Constant("max_temperature", max_temperature),
@@ -802,28 +814,14 @@ def run_single_agent_momadps(
 
     levers = []
     for i in range(centers_len):
-        levers.append(
-            RealParameter(
-                f"center {variable_macro_index} {i}",
-                -1.0,
-                1.0,
-            )
-        )
+        levers.append(RealParameter(f"center {variable_macro_index} {i}", -1.0, 1.0))
     for i in range(radii_len):
         levers.append(
-            RealParameter(
-                f"radii {variable_macro_index} {i}",
-                SMALL_NUMBER,
-                1.0,
-            )
+            RealParameter(f"radii {variable_macro_index} {i}", SMALL_NUMBER, 1.0)
         )
     for i in range(weights_len):
         levers.append(
-            RealParameter(
-                f"weights {variable_macro_index} {i}",
-                SMALL_NUMBER,
-                1.0,
-            )
+            RealParameter(f"weights {variable_macro_index} {i}", SMALL_NUMBER, 1.0)
         )
     model.levers = levers
 
@@ -832,14 +830,8 @@ def run_single_agent_momadps(
 
     agent_name = macro_region_names[variable_macro_index]
     model.outcomes = [
-        ScalarOutcome(
-            f"macro_welfare_{agent_name}",
-            kind=ScalarOutcome.MAXIMIZE,
-        ),
-        ScalarOutcome(
-            "fraction_above_threshold",
-            kind=ScalarOutcome.MINIMIZE,
-        ),
+        ScalarOutcome(f"macro_welfare_{agent_name}", kind=ScalarOutcome.MAXIMIZE),
+        ScalarOutcome("fraction_above_threshold", kind=ScalarOutcome.MINIMIZE),
     ]
 
     reference_scenario = Scenario(
@@ -865,10 +857,7 @@ def run_single_agent_momadps(
     if rank == 0:
         convergence = [
             ArchiveLogger(
-                directory_name,
-                lever_names,
-                outcome_names,
-                base_filename=filename,
+                directory_name, lever_names, outcome_names, base_filename=filename
             ),
             EpsilonProgress(),
         ]
@@ -1082,10 +1071,12 @@ if __name__ == "__main__":
     config_path = "analysis/momadps_config.json"
 
     ema_logging.log_to_stderr(ema_logging.INFO)
+
     results = run_single_agent_momadps(
         config_path="analysis/momadps_config.json",
-        reference_set_path="MOMA_reference_set.csv",
-        policy_index=26,  # Pareto-Nash solution index
+        nash_profiles_path="pareto_nash_profiles.csv",
+        policy_bank_path="COMBINED_MOMA_epsilon_nondominated_set.csv",
+        policy_index=9,  # row in pareto_nash_profiles.csv
         variable_macro_index=0,  # 0=R5ASIA, 1=R5LAM, etc.
         nfe=50,
         population_size=2,
@@ -1095,7 +1086,6 @@ if __name__ == "__main__":
         optimizer=Optimizer.MSBorgMOEA,
         reference_ssp_rcp_scenario_index=2,
     )
-
 
 # if __name__ == "__main__":
 #     config_path = "analysis/momadps_config.json"
