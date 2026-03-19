@@ -53,7 +53,7 @@ from justice.util.enumerations import (
 )
 from justice.util.model_time import TimeHorizon
 
-from borg_platypus_adapter import (  # TODO put this in  solvers/moea/borg_platypus_adapter.py
+from solvers.moea.borg_platypus_adapter import (  # TODO put this in  solvers/moea/borg_platypus_adapter.py
     BorgMOEA,
     set_ema_context,
     _ArchiveView,
@@ -95,7 +95,7 @@ class MSBorgMOEA(BorgMOEA):
 
     def run(self, max_evaluations: int):
         """Run Borg in master–slave MPI mode (islands = 1)."""
-        from borg import Borg, Configuration
+        from solvers.moea.borg import Borg, Configuration
 
         if self.borg_library_path:
             Configuration.setBorgLibrary(self.borg_library_path)
@@ -162,7 +162,7 @@ class MMBorgMOEA(BorgMOEA):
 
     def run(self, max_evaluations: int):
         """Run Borg in multi-master MPI mode."""
-        from borg import Borg, Configuration
+        from solvers.moea.borg import Borg, Configuration
 
         if self.borg_library_path:
             Configuration.setBorgLibrary(self.borg_library_path)
