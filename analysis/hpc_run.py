@@ -5,7 +5,8 @@ import numpy as np
 from justice.util.enumerations import Optimizer, Evaluator
 
 CONFIG_PATH = "analysis/momadps_config.json"
-REFERENCE_SET_PATH = "MOMA_reference_set.csv"
+NASH_PROFILES_PATH = "pareto_nash_profiles.csv"
+POLICY_BANK_PATH = "COMBINED_MOMA_epsilon_nondominated_set.csv"
 
 if __name__ == "__main__":
     nfe = int(sys.argv[1]) if len(sys.argv) > 1 else 5
@@ -21,7 +22,8 @@ if __name__ == "__main__":
 
     run_single_agent_momadps(
         config_path=CONFIG_PATH,
-        reference_set_path=REFERENCE_SET_PATH,
+        nash_profiles_path=NASH_PROFILES_PATH,
+        policy_bank_path=POLICY_BANK_PATH,
         policy_index=policy_index,
         variable_macro_index=variable_macro_index,
         nfe=nfe,
