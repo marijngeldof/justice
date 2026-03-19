@@ -53,7 +53,7 @@ from justice.util.enumerations import (
 )
 from justice.util.model_time import TimeHorizon
 
-from solvers.moea.borg_platypus_adapter import (  # TODO put this in  solvers/moea/borg_platypus_adapter.py
+from solvers.moea.borg_platypus_adapter import (
     BorgMOEA,
     set_ema_context,
     _ArchiveView,
