@@ -1066,27 +1066,47 @@ def setup_model_from_config(config_path, mapping_base_path="data/input"):
 
 ###############################################################################################################################
 
-
+# EMODPS Runs
 if __name__ == "__main__":
-    config_path = "analysis/momadps_config.json"
+    config_path = "analysis/normative_uncertainty_optimization.json"
 
     ema_logging.log_to_stderr(ema_logging.INFO)
 
-    results = run_single_agent_momadps(
-        config_path="analysis/momadps_config.json",
-        nash_profiles_path="pareto_nash_profiles.csv",
-        policy_bank_path="COMBINED_MOMA_epsilon_nondominated_set.csv",
-        policy_index=9,  # row in pareto_nash_profiles.csv
-        variable_macro_index=0,  # 0=R5ASIA, 1=R5LAM, etc.
-        nfe=50,
-        population_size=2,
-        epsilons=[1e-3, 1e-3],
-        seed=10,
+    run_optimization_adaptive(
+        config_path=config_path,
+        nfe=10,
+        swf=0,
+        seed=10,  # None for Borg. Any integer for reproducibility with other optimizers
         datapath="./data",
-        optimizer=Optimizer.MSBorgMOEA,
-        reference_ssp_rcp_scenario_index=2,
+        optimizer=Optimizer.MSBorgMOEA,  # Optimizer.MMBorgMOEA, Optimizer.EpsNSGAII
+        population_size=2,  # default is 100. Test locally with 2
+        reference_ssp_rcp_scenario_index=2,  # NOTE #TODO Get this from config json
+        evaluator=Evaluator.SequentialEvaluator,
     )
 
+
+# Single Agent Runs
+# if __name__ == "__main__":
+# config_path = "analysis/momadps_config.json"
+
+# ema_logging.log_to_stderr(ema_logging.INFO)
+
+# results = run_single_agent_momadps(
+#     config_path="analysis/momadps_config.json",
+#     nash_profiles_path="pareto_nash_profiles.csv",
+#     policy_bank_path="COMBINED_MOMA_epsilon_nondominated_set.csv",
+#     policy_index=9,  # row in pareto_nash_profiles.csv
+#     variable_macro_index=0,  # 0=R5ASIA, 1=R5LAM, etc.
+#     nfe=50,
+#     population_size=2,
+#     epsilons=[1e-3, 1e-3],
+#     seed=10,
+#     datapath="./data",
+#     optimizer=Optimizer.MSBorgMOEA,
+#     reference_ssp_rcp_scenario_index=2,
+# )
+
+# Multi-Agent Runs (full MOMADPS optimization)
 # if __name__ == "__main__":
 #     config_path = "analysis/momadps_config.json"
 
@@ -1096,24 +1116,6 @@ if __name__ == "__main__":
 #         config_path=config_path,
 #         nfe=50,
 #         # swf=0,
-#         seed=10,  # None for Borg. Any integer for reproducibility with other optimizers
-#         datapath="./data",
-#         optimizer=Optimizer.MSBorgMOEA,  # Optimizer.MMBorgMOEA, Optimizer.EpsNSGAII
-#         population_size=2,  # default is 100. Test locally with 2
-#         reference_ssp_rcp_scenario_index=2,  # NOTE #TODO Get this from config json
-#         evaluator=Evaluator.SequentialEvaluator,
-#     )
-
-
-# if __name__ == "__main__":
-#     config_path = "analysis/normative_uncertainty_optimization.json"
-
-#     ema_logging.log_to_stderr(ema_logging.INFO)
-
-#     run_optimization_adaptive(
-#         config_path=config_path,
-#         nfe=10,
-#         swf=0,
 #         seed=10,  # None for Borg. Any integer for reproducibility with other optimizers
 #         datapath="./data",
 #         optimizer=Optimizer.MSBorgMOEA,  # Optimizer.MMBorgMOEA, Optimizer.EpsNSGAII
