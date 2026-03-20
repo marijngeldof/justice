@@ -237,6 +237,8 @@ figs/*
 solvers/moea/*.so
 solvers/moea/*.dylib
 solvers/moea/borgMOEA.py
+third_paper_visualizations.ipynb
+fourth_paper_analysis.ipynb
 # tests/verification_data/*
 #Mac
 .DS_Store
