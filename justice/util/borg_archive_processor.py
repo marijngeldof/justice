@@ -3,18 +3,22 @@
 Convert per-island CSV snapshots (mm_intermediate/mm_*) into tar.gz archives that
 mimic the original EMA structure: a tmp/ folder containing selected CSV files.
 
-Usage:
+Usage (single zip):
     python borg_archive_processor.py \
-        --archive /path_to_data/mm_intermediate.zip \
-        --base-name UTILITARIAN_50000_17 \
-        --step 1000 \
-        --output-dir /path/to/save/tars
+        --archive /path/mm_intermediate_5.zip \
+        --base-name MOMA_200000_ref2 \
+        --step 10000 \
+        --island-offset 0
 
+Usage (second zip, continuing numbering from island 5):
+    python borg_archive_processor.py \
+        --archive /path/mm_intermediate_4.zip \
+        --base-name MOMA_200000_ref2 \
+        --step 10000 \
+        --island-offset 5
 
-If --archive points to a directory (e.g., mm_intermediate/) instead of a zip file,
-the script works the same way.
+Output: MOMA_200000_ref2_0.tar.gz ... MOMA_200000_ref2_8.tar.gz
 """
-
 
 import argparse
 import os
@@ -37,7 +41,7 @@ def parse_args():
     parser.add_argument(
         "--base-name",
         required=True,
-        help="Base name for outputs (e.g., UTILITARIAN_50000_17). "
+        help="Base name for outputs (e.g., MOMA_200000_ref2). "
         "Each island tar will be {base-name}_{island}.tar.gz",
     )
     parser.add_argument(
@@ -51,6 +55,14 @@ def parse_args():
         "--output-dir",
         default=None,
         help="Directory for the output tar.gz files. Default: same as the archive location.",
+    )
+    parser.add_argument(
+        "--island-offset",
+        type=int,
+        default=0,
+        help="Integer offset added to each island index. "
+        "Use 0 for the first zip (5 islands → 0..4), "
+        "then 5 for the second zip (4 islands → 5..8).",
     )
     return parser.parse_args()
 
@@ -84,9 +96,7 @@ def select_csvs(csv_files, step):
     if not csv_files:
         return []
 
-    selected = []
-    first_csv = csv_files[0]
-    selected.append(first_csv)
+    selected = [csv_files[0]]
 
     if step <= 0:
         selected.extend(csv_files[1:])
@@ -99,7 +109,7 @@ def select_csvs(csv_files, step):
         if nfe % step == 0:
             selected.append(csv_file)
 
-    # Ensure no duplicates and preserve ordering
+    # Deduplicate while preserving order
     seen = set()
     unique_selected = []
     for csv_file in selected:
@@ -136,7 +146,7 @@ def package_mm_island(island_dir, output_dir, base_name, island_idx, step):
         with tarfile.open(tar_path, "w:gz") as tar:
             tar.add(tmp_dir, arcname="tmp")
 
-    print(f"[OK] {tar_path}")
+    print(f"[OK] {tar_path}  (source island: {island_dir.name})")
     return tar_path
 
 
@@ -158,19 +168,26 @@ def main():
 
     output_dir = Path(args.output_dir) if args.output_dir else archive_path.parent
 
-    print(f"Processing {len(island_dirs)} island folders under {root}")
-    print(f"Step filter: {'all CSVs' if args.step <= 0 else f'every {args.step}'}")
+    print(f"Archive        : {archive_path}")
+    print(f"Islands found  : {len(island_dirs)}")
+    print(
+        f"Island offset  : {args.island_offset}  → indices {args.island_offset}..{args.island_offset + len(island_dirs) - 1}"
+    )
+    print(f"Step filter    : {'all CSVs' if args.step <= 0 else f'every {args.step}'}")
+    print(f"Output dir     : {output_dir}")
+    print()
 
-    for island_dir in island_dirs:
-        suffix = island_dir.name.split("mm_")[-1]
+    for local_idx, island_dir in enumerate(island_dirs):
+        global_idx = local_idx + args.island_offset
         package_mm_island(
             island_dir=island_dir,
             output_dir=output_dir,
             base_name=args.base_name,
-            island_idx=suffix,
+            island_idx=global_idx,  # <-- offset applied here
             step=max(args.step, 0),
         )
-    print("Done.")
+
+    print("\nDone.")
 
 
 if __name__ == "__main__":
