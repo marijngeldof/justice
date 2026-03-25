@@ -8,7 +8,9 @@ from pathlib import Path
 from itertools import product
 import multiprocessing as mp
 from typing import Any, Dict, List, Tuple, Optional
-
+import zipfile
+import tarfile
+import io
 from solvers.emodps.rbf import RBF
 
 from justice.util.enumerations import (
@@ -65,6 +67,32 @@ def is_pareto_dominated(
             return True
 
     return False
+
+
+# ── HELPER: extract all 200000.csv seeds from a zip ──────────────────────────
+def extract_final_csv_from_zip(zip_path: str) -> pd.DataFrame:
+    dfs = []
+    with zipfile.ZipFile(zip_path, "r") as outer_zip:
+        tar_names = [n for n in outer_zip.namelist() if n.endswith(".tar.gz")]
+        print(f"        Found {len(tar_names)} tar.gz in {os.path.basename(zip_path)}")
+
+        for tar_name in tar_names:
+            with outer_zip.open(tar_name) as tar_bytes:
+                with tarfile.open(
+                    fileobj=io.BytesIO(tar_bytes.read()), mode="r:gz"
+                ) as tar:
+                    csv_members = [
+                        m for m in tar.getmembers() if m.name.endswith("200000.csv")
+                    ]
+                    if not csv_members:
+                        print(f"        [WARN] No 200000.csv in {tar_name}, skipping.")
+                        continue
+                    f = tar.extractfile(csv_members[0])
+                    df = pd.read_csv(f)
+                    dfs.append(df)
+                    print(f"        Loaded {len(df):>6} rows ← {tar_name}")
+
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 
 # ------------------------ policy bank ------------------------
