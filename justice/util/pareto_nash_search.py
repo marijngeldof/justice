@@ -28,6 +28,45 @@ from justice.util.data_loader import DataLoader
 from justice.util.model_time import TimeHorizon
 
 
+# ── HELPERS ───────────────────────────────────────────────────────────────────
+def is_pareto_dominated(
+    solution_idx, agent_name, df, agent_objectives, minimize_objectives
+):
+    """
+    Returns True if solution_idx is Pareto-dominated by any other solution
+    for the given agent's objectives.
+    """
+    objectives = agent_objectives[agent_name]
+    solution_outcome = df.loc[solution_idx, objectives].values
+
+    for other_idx in df.index:
+        if other_idx == solution_idx:
+            continue
+
+        other_outcome = df.loc[other_idx, objectives].values
+        at_least_as_good = True
+        strictly_better = False
+
+        for i, obj in enumerate(objectives):
+            if obj in minimize_objectives:
+                if other_outcome[i] > solution_outcome[i]:
+                    at_least_as_good = False
+                    break
+                elif other_outcome[i] < solution_outcome[i]:
+                    strictly_better = True
+            else:
+                if other_outcome[i] < solution_outcome[i]:
+                    at_least_as_good = False
+                    break
+                elif other_outcome[i] > solution_outcome[i]:
+                    strictly_better = True
+
+        if at_least_as_good and strictly_better:
+            return True
+
+    return False
+
+
 # ------------------------ policy bank ------------------------
 
 
