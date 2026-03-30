@@ -18,6 +18,20 @@ import filecmp
 import multiprocessing as mp
 
 
+from typing import Tuple, Dict
+from justice.util.enumerations import (
+    Economy,
+    DamageFunction,
+    Abatement,
+    WelfareFunction,
+)
+from justice.model import JUSTICE
+from justice.util.emission_control_constraint import EmissionControlConstraint
+from solvers.emodps.rbf import RBF
+from justice.util.regional_configuration import aggregate_by_macro_region
+from justice.util.regional_configuration import build_macro_region_mapping
+import json
+
 ema_logging.log_to_stderr(level=ema_logging.DEFAULT_LEVEL)
 
 # To run the code, you need to run the following command in the terminal to add the path to the PYTHONPATH
@@ -1662,3 +1676,278 @@ if __name__ == "__main__":
             # "Egalitarian",
         ],
     )
+
+
+def run_momadps_policy(
+    policy_csv_path: str,
+    policy_index: int,
+    scenario: int = 2,
+    config_path: str = "momadps_config.json",
+    mapping_base_path: str = "data/input",
+) -> Tuple[Tuple[float, ...], Dict[str, np.ndarray]]:
+    """
+    Re-simulate JUSTICE under a multi-agent RBF policy taken from a CSV row.
+
+    Parameters
+    ----------
+    policy_csv_path : str
+        Path to the CSV file containing optimization results (centers/radii/weights/metrics).
+    policy_index : int
+        Row index to extract. Supports negative indices (like pandas .iloc).
+    scenario : Scenario
+        Which SSP-RCP scenario to run (default: SSP2-RCP45).
+    config_path : str
+        JSON config used during MOMADPS optimization (e.g., "momadps_config.json").
+    mapping_base_path : str
+        Directory containing "R5_regions.json" and "rice50_regions_dict.json".
+
+    Returns
+    -------
+    objectives : Tuple[float, ...]
+        A 6-tuple (five macro welfare metrics + fraction-above-threshold) matching the wrapper outputs.
+    datasets : Dict[str, np.ndarray]
+        Full JUSTICE datasets dictionary; includes a "constrained_emission_control_rate" array.
+    """
+
+    # --- Load config & policy row --------------------------------------------------
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    df = pd.read_csv(policy_csv_path)
+    if policy_index < -len(df) or policy_index >= len(df):
+        raise IndexError(
+            f"policy_index {policy_index} out of bounds for CSV with {len(df)} rows."
+        )
+    policy_row = df.iloc[int(policy_index)]
+
+    # --- Extract shared settings (mirrors analyzer setup) --------------------------
+    start_year = config["start_year"]
+    end_year = config["end_year"]
+    data_timestep = config["data_timestep"]
+    timestep = config["timestep"]
+    emission_control_start_year = config["emission_control_start_year"]
+
+    n_inputs = config["n_inputs"]
+    temperature_year_of_interest = config["temperature_year_of_interest"]
+    stochastic_run = config["stochastic_run"]
+    climate_members = config.get("climate_ensemble_members")
+
+    min_temperature = config["min_temperature"]
+    max_temperature = config["max_temperature"]
+    min_temperature_change = config["min_temperature_change"]
+    max_temperature_change = config["max_temperature_change"]
+    consumption_min = config["consumption_min"]
+    consumption_max = config["consumption_max"]
+
+    data_loader = DataLoader()
+    region_list = data_loader.REGION_LIST
+    n_regions = len(region_list)
+
+    time_horizon = TimeHorizon(
+        start_year=start_year,
+        end_year=end_year,
+        data_timestep=data_timestep,
+        timestep=timestep,
+    )
+    emission_start_ts = time_horizon.year_to_timestep(
+        year=emission_control_start_year, timestep=timestep
+    )
+    temperature_year_index = time_horizon.year_to_timestep(
+        year=temperature_year_of_interest, timestep=timestep
+    )
+    n_timesteps = len(time_horizon.model_time_horizon)
+
+    r5_json = Path(mapping_base_path) / "R5_regions.json"
+    rice50_json = Path(mapping_base_path) / "rice50_regions_dict.json"
+    region_to_macro, macro_region_names = build_macro_region_mapping(
+        region_list=region_list,
+        r5_json_path=r5_json,
+        rice50_json_path=rice50_json,
+    )
+    n_macro_regions = len(macro_region_names)
+
+    macro_region_counts = np.bincount(
+        region_to_macro, minlength=n_macro_regions
+    ).astype(float)
+    macro_region_counts = macro_region_counts[:, None]  # (n_macro, 1)
+
+    # --- Construct RBFs exactly as in optimization ---------------------------------
+    rbf_template = RBF(
+        n_rbfs=(n_inputs + 2),
+        n_inputs=n_inputs,
+        n_outputs=1,
+    )
+    centers_shape, radii_shape, weights_shape = rbf_template.get_shape()
+    centers_len, radii_len, weights_len = (
+        centers_shape[0],
+        radii_shape[0],
+        weights_shape[0],
+    )
+
+    macro_rbfs = []
+    for macro_idx in range(n_macro_regions):
+        centers = np.array(
+            [policy_row[f"center {macro_idx} {i}"] for i in range(centers_len)]
+        )
+        radii = np.array(
+            [policy_row[f"radii {macro_idx} {i}"] for i in range(radii_len)]
+        )
+        weights = np.array(
+            [policy_row[f"weights {macro_idx} {i}"] for i in range(weights_len)]
+        )
+
+        rbf = RBF(
+            n_rbfs=(n_inputs + 2),
+            n_inputs=n_inputs,
+            n_outputs=1,
+        )
+        decision_vars = np.concatenate((centers, radii, weights))
+        rbf.set_decision_vars(decision_vars)
+        macro_rbfs.append(rbf)
+
+    # --- Instantiate JUSTICE -------------------------------------------------------
+    model = JUSTICE(
+        scenario=scenario,
+        economy_type=Economy.NEOCLASSICAL,
+        damage_function_type=DamageFunction.KALKUHL,
+        abatement_type=Abatement.ENERDATA,
+        social_welfare_function=WelfareFunction.UTILITARIAN,
+        stochastic_run=stochastic_run,
+        # climate_ensembles=climate_members,
+    )
+
+    no_of_ensembles = model.__getattribute__("no_of_ensembles")
+
+    emission_constraint = EmissionControlConstraint(
+        max_annual_growth_rate=0.04,
+        emission_control_start_timestep=emission_start_ts,
+        min_emission_control_rate=0.01,
+    )
+
+    inv_temperature_range = 1.0 / (max_temperature - min_temperature)
+    inv_temperature_change_range = 1.0 / (
+        max_temperature_change - min_temperature_change
+    )
+    inv_consumption_range = 1.0 / (consumption_max - consumption_min)
+
+    regional_emission_control_rate = np.zeros(
+        (n_regions, n_timesteps, no_of_ensembles), dtype=float
+    )
+    constrained_emission_control_rate = np.zeros_like(regional_emission_control_rate)
+    macro_emission_control_rate = np.zeros(
+        (n_macro_regions, n_timesteps, no_of_ensembles), dtype=float
+    )
+    macro_consumption_history = np.zeros(
+        (n_macro_regions, n_timesteps, no_of_ensembles), dtype=float
+    )
+
+    rbf_input_buffer = np.empty((n_inputs, no_of_ensembles), dtype=float)
+    previous_temperature = np.zeros(no_of_ensembles, dtype=float)
+    previous_temperature_change = np.zeros(no_of_ensembles, dtype=float)
+
+    region_population = (
+        model.economy.get_population()
+    )  # shape: (n_regions, n_timesteps, no_of_ensembles)
+    # --- Simulation loop -----------------------------------------------------------
+    for timestep in range(n_timesteps):
+        constrained_emission_control_rate[:, timestep, :] = (
+            emission_constraint.constrain_emission_control_rate(
+                regional_emission_control_rate[:, timestep, :],
+                timestep,
+                allow_fallback=False,
+            )
+        )
+
+        model.stepwise_run(
+            emission_control_rate=constrained_emission_control_rate[:, timestep, :],
+            timestep=timestep,
+            endogenous_savings_rate=True,
+        )
+        datasets = model.stepwise_evaluate(timestep=timestep)
+
+        global_temperature = datasets["global_temperature"][timestep, :]
+        consumption = datasets["consumption"][
+            :, timestep, :
+        ]  # (n_regions, no_of_ensembles)
+        # consumption_per_capita = datasets["consumption_per_capita"][:, timestep, :]
+
+        if timestep == 0:
+            temperature_change = np.zeros_like(global_temperature)
+            previous_temperature = global_temperature.copy()
+            previous_temperature_change = temperature_change.copy()
+        elif timestep % 5 == 0:
+            temperature_change = global_temperature - previous_temperature
+            previous_temperature = global_temperature.copy()
+            previous_temperature_change = temperature_change.copy()
+        else:
+            temperature_change = previous_temperature_change
+
+        rbf_input_buffer[0, :] = np.clip(
+            (global_temperature - min_temperature) * inv_temperature_range,
+            0.0,
+            1.0,
+        )
+        rbf_input_buffer[1, :] = np.clip(
+            (temperature_change - min_temperature_change)
+            * inv_temperature_change_range,
+            0.0,
+            1.0,
+        )
+
+        # --- population-weighted macro per-capita -----------------------------
+        pop_t = region_population[:, timestep, :]  # (n_regions, no_of_ensembles)
+        macro_population = aggregate_by_macro_region(
+            pop_t, region_to_macro
+        )  # (n_macro_regions, no_of_ensembles)
+        macro_total_consumption = aggregate_by_macro_region(
+            consumption, region_to_macro
+        )  # (n_macro_regions, no_of_ensembles)
+        macro_cpc = (
+            macro_total_consumption / macro_population
+        ) * 1e3  # population-weighted per-capita
+        macro_consumption_history[:, timestep, :] = macro_cpc
+
+        normalized_macro_consumption = np.clip(
+            (macro_cpc - consumption_min) * inv_consumption_range,
+            0.0,
+            1.0,
+        )
+
+        if timestep < n_timesteps - 1:
+            for macro_idx, rbf in enumerate(macro_rbfs):
+                rbf_input_buffer[2, :] = normalized_macro_consumption[macro_idx, :]
+                macro_output = rbf.apply_rbfs(rbf_input_buffer)
+                macro_emission_control_rate[macro_idx, timestep + 1, :] = macro_output
+
+            regional_emission_control_rate[:, timestep + 1, :] = (
+                macro_emission_control_rate[region_to_macro, timestep + 1, :]
+            )
+
+    datasets = model.evaluate()
+    datasets["constrained_emission_control_rate"] = constrained_emission_control_rate
+    datasets["macro_consumption_history"] = macro_consumption_history
+    datasets["regional_emission_control_rate"] = regional_emission_control_rate
+
+    spatially_disaggregated_welfare = (
+        model.welfare_function.calculate_spatially_disaggregated_welfare(
+            macro_consumption_history
+        )
+    )
+
+    fraction_above_threshold = fraction_of_ensemble_above_threshold(
+        temperature=datasets["global_temperature"],
+        temperature_year_index=temperature_year_index,
+        threshold=2.0,
+    )
+
+    objectives = (
+        float(spatially_disaggregated_welfare[0]),
+        float(spatially_disaggregated_welfare[1]),
+        float(spatially_disaggregated_welfare[2]),
+        float(spatially_disaggregated_welfare[3]),
+        float(spatially_disaggregated_welfare[4]),
+        float(fraction_above_threshold),
+    )
+
+    model.hard_reset()
+    return objectives, datasets

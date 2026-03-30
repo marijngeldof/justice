@@ -217,7 +217,7 @@ class SocialWelfareFunction:
             states_aggregated_consumption_per_capita
         )
 
-        # If data is 3D, we need to apply the discount rate across the first axis (regions)
+        # Need to apply the discount rate over time dimension.
         spatially_disaggregated_welfare = (
             states_aggregated_consumption_per_capita - 1
         ) * discount_rate[None, :]

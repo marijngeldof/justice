@@ -34,6 +34,19 @@ from justice.util.data_loader import DataLoader
 from justice.util.model_time import TimeHorizon
 
 
+def load_nash_profile(out_dir: str, profile_index: int, DATASET_KEYS: list) -> dict:
+    """Load all saved arrays for a given Nash profile index."""
+    return {
+        key: np.load(Path(out_dir) / f"{key}_nash_profile_{profile_index}.npy")
+        for key in DATASET_KEYS
+    }
+
+
+def get_array_path(out_dir: str, profile_index: int, key: str) -> str:
+    """Return the file path for a specific array of a Nash profile."""
+    return str(Path(out_dir) / f"{key}_nash_profile_{profile_index}.npy")
+
+
 def infer_n_agents_from_actions(df: pd.DataFrame, action_prefix: str = "a") -> int:
     idx = [
         int(c[len(action_prefix) :])
