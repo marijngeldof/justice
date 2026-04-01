@@ -76,6 +76,7 @@ def aggregate_abated_emissions(
 # -------------------------------
 def build_long_dataframe(
     base_path="data/temporary/NU_DATA/mmBorg/",
+    model_output_dir=None,
     region_mapping_path="data/input/12_regions.json",
     rice_region_dict_path="data/input/rice50_regions_dict.json",
     years_of_interest=(2030, 2050, 2070, 2100),
@@ -90,6 +91,9 @@ def build_long_dataframe(
     with open(base_path + "min_regret_policy_indices.json", "r") as f:
         policy_indices = json.load(f)
 
+    # ── resolve model_output_dir ───────────────────────────────────────────────
+    model_output_path = Path(model_output_dir) if model_output_dir else Path(base_path)
+
     baseline_path = Path(base_path) / "emissions_array_all_SSPs.npy"
     baseline_emissions = np.load(
         baseline_path
@@ -98,19 +102,18 @@ def build_long_dataframe(
     rows = []
 
     for reference_scenario, welfare_map in policy_indices.items():
-
         for welfare_type, regret_map in welfare_map.items():
-
             for scenario_index, scenario in enumerate(scenario_list):
-
                 for regret in regret_map.keys():
                     policy_idx = regret_map[regret]
-                    folder_name = f"{welfare_type}_{reference_scenario}/ref_{reference_scenario}_{regret}_idx{policy_idx}"
-                    path = Path(base_path) / folder_name
+
+                    # ── Option A flat naming ───────────────────────────────────
                     emissions_file = (
-                        path
-                        / f"{welfare_type}_ref_{reference_scenario}_{regret}_idx{policy_idx}_emissions_idx{policy_idx}_{scenario}_emissions.npy"
+                        model_output_path
+                        / f"{welfare_type}_{reference_scenario}_{regret}"
+                        f"_emissions_idx{policy_idx}_{scenario}_emissions.npy"
                     )
+
                     emissions_data = np.load(
                         emissions_file
                     )  # (src_regions, time, samples)
@@ -547,7 +550,7 @@ def run_ml_importance_for_scope(
     outbase = Path(output_dir) / scope.lower() / target_stat.lower()
     outbase.mkdir(parents=True, exist_ok=True)
 
-    print(f"Saving plots to: {outbase.resolve()}")
+    # print(f"Saving plots to: {outbase.resolve()}")
 
     for yr in years:
         d = df[df["Year"] == yr].copy()
