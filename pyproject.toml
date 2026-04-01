@@ -20,6 +20,7 @@ dependencies = [
     "tyro (>=0.9.24)",
     "wandb (==0.20.1)",
     "numpy (>=1.26.0, <2.0)",
+    "pandas (>=2.1.0)",
     "python-cdd (==0.0.98)",
     "pytest (>=8.0)",
 ]
