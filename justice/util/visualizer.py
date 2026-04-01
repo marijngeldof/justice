@@ -541,30 +541,32 @@ def plot_grouped_stacked_feature_importance_from_csvs(
     sns.set_theme(style="white")
 
     if group_map:
-        group_order = list(group_map.keys())
-        label_map = {
-            group: f"{group} ({', '.join(group_map[group])})" for group in group_order
+        # Reverse map: feature → group name
+        feat_to_group = {
+            feat: group for group, feats in group_map.items() for feat in feats
         }
-        group_colors = group_colors if group_colors is not None else GROUP_COLORS
+        group_feat_counts = {group: len(feats) for group, feats in group_map.items()}
 
-        def aggregate_by_group(df_row):
-            row = {"Year": int(df_row["Year"])}
-            for group, feats in group_map.items():
-                missing = [f for f in feats if f not in df_row.index]
-                if missing:
-                    raise KeyError(
-                        f"Missing features {missing} required for group '{group}'"
-                    )
-                row[group] = df_row[list(feats)].sum()
-            return row
+        # Preserve feature_order for stacking; use feature_colors for exact colors
+        sub_feature_order = [f for f in feature_order if f in feat_to_group]
+        sub_feature_colors = {
+            feat: feature_colors.get(feat, "#999999") for feat in sub_feature_order
+        }
+        sub_legend_labels = {
+            feat: (
+                f"{feat_to_group[feat]} — {feat}"
+                if group_feat_counts[feat_to_group[feat]] > 1
+                else feat_to_group[feat]
+            )
+            for feat in sub_feature_order
+        }
 
         def transform_df(df_plot):
-            records = [aggregate_by_group(row) for _, row in df_plot.iterrows()]
             return (
-                pd.DataFrame(records),
-                group_order,
-                group_colors,
-                label_map,
+                df_plot,
+                sub_feature_order,
+                sub_feature_colors,
+                sub_legend_labels,
                 group_map,
             )
 
