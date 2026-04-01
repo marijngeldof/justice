@@ -5,12 +5,12 @@ description = "JUSTICE is an open-source Integrated Assessment Modeling Framewor
 authors = [{ name = "PBiswas", email = "p.biswas@tudelft.nl" }]
 license = { text = "BSD-3-Clause" }
 readme = "README.md"
-requires-python = ">=3.10, <4"
+requires-python = ">=3.12, <4"
 dependencies = [
     "fair (==2.1.3)",
     "h5py (==3.13.0)",
     "platypus-opt (==1.4.1)",
-    "ema-workbench (==2.5.3)",
+    "ema-workbench (>=3.0.0)",
     "scipy (>=1.10.0)",
     "deap (>=1.4.0)",
     "ipyparallel (>=8.6.1)",
