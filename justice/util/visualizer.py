@@ -548,7 +548,7 @@ def plot_grouped_stacked_feature_importance_from_csvs(
         group_colors = group_colors if group_colors is not None else GROUP_COLORS
 
         def aggregate_by_group(df_row):
-            row = {"Year": df_row["Year"]}
+            row = {"Year": int(df_row["Year"])}
             for group, feats in group_map.items():
                 missing = [f for f in feats if f not in df_row.index]
                 if missing:
